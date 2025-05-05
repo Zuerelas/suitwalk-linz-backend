@@ -22,6 +22,7 @@ const db = mysql.createConnection({
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
+    connectTimeout: 10000, // 10 seconds
 });
 
 db.connect((err) => {
@@ -65,22 +66,24 @@ app.get('/', (req, res) => {
     }
 
     // Insert or update user in the database
-    const { id, first_name, last_name, username, photo_url } = telegramData;
-    console.log('Query values:', { id, first_name, last_name, username, photo_url, authDate });
+    const { id, first_name, last_name, username, photo_url, type, badge } = telegramData;
+    console.log('Query values:', { id, first_name, last_name, username, photo_url, authDate, type, badge });
     const query = `
-        INSERT INTO users (telegram_id, first_name, last_name, username, photo_url, auth_date)
-        VALUES (?, ?, ?, ?, ?, FROM_UNIXTIME(?))
+        INSERT INTO users (telegram_id, first_name, last_name, username, photo_url, auth_date, type, badge)
+        VALUES (?, ?, ?, ?, ?, FROM_UNIXTIME(?), ?, ?)
         ON DUPLICATE KEY UPDATE
         first_name = VALUES(first_name),
         last_name = VALUES(last_name),
         username = VALUES(username),
         photo_url = VALUES(photo_url),
-        auth_date = VALUES(auth_date);
+        auth_date = VALUES(auth_date),
+        type = VALUES(type),
+        badge = VALUES(badge);
     `;
 
     db.query(
         query,
-        [id, first_name, last_name, username, photo_url, authDate],
+        [id, first_name, last_name, username, photo_url, authDate, type, badge],
         (err) => {
             if (err) {
                 console.error('Error inserting/updating user:', err.message, err);
