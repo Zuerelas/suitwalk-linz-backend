@@ -48,6 +48,7 @@ function verifyTelegramAuth(data) {
 // Telegram Auth Endpoint
 app.get('/', (req, res) => {
     const telegramData = req.query;
+    console.log('Received Telegram data:', telegramData);
 
     // Verify Telegram data
     if (!verifyTelegramAuth(telegramData)) {
@@ -65,6 +66,7 @@ app.get('/', (req, res) => {
 
     // Insert or update user in the database
     const { id, first_name, last_name, username, photo_url } = telegramData;
+    console.log('Query values:', { id, first_name, last_name, username, photo_url, authDate });
     const query = `
         INSERT INTO users (telegram_id, first_name, last_name, username, photo_url, auth_date)
         VALUES (?, ?, ?, ?, ?, FROM_UNIXTIME(?))
@@ -81,7 +83,7 @@ app.get('/', (req, res) => {
         [id, first_name, last_name, username, photo_url, authDate],
         (err) => {
             if (err) {
-                console.error('Error inserting/updating user:', err);
+                console.error('Error inserting/updating user:', err.message, err);
                 return res.status(500).send('Internal Server Error');
             }
 
@@ -93,7 +95,7 @@ app.get('/', (req, res) => {
 });
 
 // Start the Server
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3306;
 app.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);
 });
