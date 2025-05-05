@@ -46,7 +46,7 @@ function verifyTelegramAuth(data) {
 }
 
 // Telegram Auth Endpoint
-app.get('/api/telegram-auth', (req, res) => {
+app.get('/', (req, res) => {
     const telegramData = req.query;
 
     // Verify Telegram data
