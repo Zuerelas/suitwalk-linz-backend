@@ -53,9 +53,9 @@ function verifyTelegramAuth(data) {
     return hash === data.hash;
 }
 
-// Telegram Auth Endpoint
-app.get('/', (req, res) => {
-    console.log('Request received at root endpoint');
+// Change the root handler to handle telegram-auth specifically
+app.get('/api/telegram-auth', (req, res) => {
+    console.log('Telegram auth request received');
     console.log('Query parameters:', req.query);
     
     const telegramData = req.query;
@@ -122,6 +122,11 @@ app.get('/', (req, res) => {
         console.error('Error processing request:', error);
         return res.status(500).send('Server error processing the request');
     }
+});
+
+// Keep a root handler for health checks
+app.get('/', (req, res) => {
+    res.send('API server is running');
 });
 
 // Start the Server
