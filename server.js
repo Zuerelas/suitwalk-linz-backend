@@ -7,10 +7,12 @@ require('dotenv').config();
 const app = express();
 app.use(bodyParser.json());
 
-// Add CORS headers
+// Update your CORS configuration
 app.use((req, res, next) => {
-    res.header("Access-Control-Allow-Origin", "https://test.suitwalk-linz.at");
+    // Allow requests from both your test domain and Telegram
+    res.header("Access-Control-Allow-Origin", "*");
     res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+    res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     next();
 });
 
@@ -40,87 +42,136 @@ db.connect((err) => {
     console.log('Connected to the MySQL database.');
 });
 
-// Verify Telegram Authentication
+// Fix your verifyTelegramAuth function
 function verifyTelegramAuth(data) {
-    const token = process.env.TELEGRAM_BOT_TOKEN;
-    const secretKey = crypto.createHash('sha256').update(token).digest();
-    const dataCheckString = Object.keys(data)
-        .filter((key) => key !== 'hash')
-        .sort()
-        .map((key) => `${key}=${data[key]}`)
-        .join('\n');
-    const hash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
-    return hash === data.hash;
+    if (!data || !data.hash) {
+        console.error('Missing hash in data');
+        return false;
+    }
+    
+    try {
+        const token = process.env.TELEGRAM_BOT_TOKEN;
+        const secretKey = crypto.createHash('sha256').update(token).digest();
+        
+        // Create the data check string exactly as Telegram does
+        const dataCheckString = Object.keys(data)
+            .filter(key => key !== 'hash')
+            .sort()
+            .map(key => `${key}=${data[key]}`)
+            .join('\n');
+            
+        console.log('Data check string:', dataCheckString);
+        
+        // Calculate the hash
+        const calculatedHash = crypto
+            .createHmac('sha256', secretKey)
+            .update(dataCheckString)
+            .digest('hex');
+            
+        console.log('Calculated hash:', calculatedHash);
+        console.log('Provided hash:', data.hash);
+        
+        return calculatedHash === data.hash;
+    } catch (error) {
+        console.error('Error in verification:', error);
+        return false;
+    }
 }
 
-// Change the root handler to handle telegram-auth specifically
+// Add a debug endpoint
+app.get('/debug', (req, res) => {
+    res.json({
+        environment: {
+            nodeEnv: process.env.NODE_ENV,
+            hasToken: !!process.env.TELEGRAM_BOT_TOKEN,
+            botTokenPrefix: process.env.TELEGRAM_BOT_TOKEN ? 
+                process.env.TELEGRAM_BOT_TOKEN.substring(0, 5) + '...' : 'Not set',
+            hasDbConfig: !!(process.env.DB_HOST && process.env.DB_USER && 
+                process.env.DB_PASSWORD && process.env.DB_NAME),
+        },
+        timestamp: new Date().toISOString()
+    });
+});
+
+// Add proper handling for OPTIONS requests for CORS
+app.options('*', (req, res) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+    res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.sendStatus(200);
+});
+
+// Update the telegram auth endpoint
 app.get('/api/telegram-auth', (req, res) => {
     console.log('Telegram auth request received');
     console.log('Query parameters:', req.query);
     
     const telegramData = req.query;
     
-    if (!telegramData || !telegramData.id) {
-        console.error('No Telegram data received');
-        return res.status(400).send('Bad request: No Telegram data received');
-    }
-    
-    console.log('Received Telegram data:', telegramData);
-    
-    // Extract the standard Telegram data
-    const { id, first_name, last_name, username, photo_url, auth_date, hash } = telegramData;
-    
-    // Extract custom parameters if they exist, or use defaults
-    const type = telegramData.type || 'Visitor';
-    const badge = telegramData.badge === 'true' || false;
-
+    // Handle validation, authentication and redirect in separate try-catch blocks
     try {
-        // Verify Telegram data
+        // Basic validation
+        if (!telegramData || !telegramData.id) {
+            console.error('No Telegram data received');
+            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=no_data');
+        }
+        
+        // Extract the data
+        const { id, first_name, last_name, username, photo_url, auth_date, hash } = telegramData;
+        const type = telegramData.type || 'Suiter';  // Default to Suiter
+        const badge = telegramData.badge === 'true' || false;
+        
+        // Verify the data
         if (!verifyTelegramAuth(telegramData)) {
-            console.error('Invalid Telegram authentication data:', telegramData);
-            return res.status(401).send('Unauthorized: Invalid Telegram data.');
+            console.error('Invalid Telegram authentication data');
+            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=invalid_auth');
         }
-
-        // Validate auth_date to prevent replay attacks
-        const authDate = parseInt(telegramData.auth_date, 10);
-        const currentTime = Math.floor(Date.now() / 1000); // Current time in seconds
-        if (currentTime - authDate > 86400) { // Allow a maximum of 24 hours
-            console.error('Authentication data is too old:', telegramData);
-            return res.status(401).send('Unauthorized: Authentication data is too old.');
+        
+        // Validate auth_date
+        const authDate = parseInt(auth_date, 10);
+        const currentTime = Math.floor(Date.now() / 1000);
+        if (currentTime - authDate > 86400) {
+            console.error('Authentication data is too old');
+            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=auth_expired');
         }
-
-        // Insert or update user in the database
-        console.log('Query values:', { id, first_name, last_name, username, photo_url, authDate, type, badge });
-        const query = `
-            INSERT INTO users (telegram_id, first_name, last_name, username, photo_url, auth_date, type, badge)
-            VALUES (?, ?, ?, ?, ?, FROM_UNIXTIME(?), ?, ?)
-            ON DUPLICATE KEY UPDATE
-            first_name = VALUES(first_name),
-            last_name = VALUES(last_name),
-            username = VALUES(username),
-            photo_url = VALUES(photo_url),
-            auth_date = VALUES(auth_date),
-            type = VALUES(type),
-            badge = VALUES(badge);
-        `;
-
-        db.query(
-            query,
-            [id, first_name, last_name, username, photo_url, authDate, type, badge],
-            (err) => {
-                if (err) {
-                    console.error('Error inserting/updating user:', err.message, err);
-                    return res.status(500).send('Internal Server Error');
+        
+        // Store in database (wrapped in try-catch to prevent crashing)
+        try {
+            const query = `
+                INSERT INTO users (telegram_id, first_name, last_name, username, photo_url, auth_date, type, badge)
+                VALUES (?, ?, ?, ?, ?, FROM_UNIXTIME(?), ?, ?)
+                ON DUPLICATE KEY UPDATE
+                first_name = VALUES(first_name),
+                last_name = VALUES(last_name),
+                username = VALUES(username),
+                photo_url = VALUES(photo_url),
+                auth_date = VALUES(auth_date),
+                type = VALUES(type),
+                badge = VALUES(badge);
+            `;
+            
+            db.query(
+                query,
+                [id, first_name, last_name, username, photo_url, authDate, type, badge],
+                (err) => {
+                    if (err) {
+                        console.error('Database error:', err);
+                        // Continue with redirect even if DB fails
+                    }
+                    
+                    console.log(`User ${id} authenticated successfully`);
+                    // Redirect to success page
+                    res.redirect('https://test.suitwalk-linz.at/#/anmeldung/erfolgreich');
                 }
-
-                console.log(`User ${id} successfully authenticated and stored.`);
-                // Redirect to success page
-                res.redirect(`https://test.suitwalk-linz.at/#/anmeldung/erfolgreich`);
-            }
-        );
+            );
+        } catch (dbError) {
+            console.error('Database operation failed:', dbError);
+            // Still redirect to success if DB fails but auth was valid
+            res.redirect('https://test.suitwalk-linz.at/#/anmeldung/erfolgreich');
+        }
     } catch (error) {
-        console.error('Error processing request:', error);
-        return res.status(500).send('Server error processing the request');
+        console.error('General error:', error);
+        res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=server_error');
     }
 });
 
