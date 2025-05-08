@@ -249,7 +249,7 @@ app.post('/api/order-badge', (req, res) => {
         const query = `
             UPDATE users
             SET badge = 1
-            WHERE telegram_id = ?;
+            WHERE telegram_id = ${telegram_id};
         `;
 
         db.query(query, [telegram_id], (err, result) => {
