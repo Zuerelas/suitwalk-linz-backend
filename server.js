@@ -249,6 +249,9 @@ app.use((err, req, res, next) => {
     res.status(500).json({ error: 'Server error' });
 });
 
+const router = require('./router');
+app.use('/api', router);
+
 // Start server if not running as a module
 if (require.main === module) {
     const PORT = process.env.PORT || 3000;
