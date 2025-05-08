@@ -238,6 +238,37 @@ app.get('/test', (req, res) => {
     });
 });
 
+app.post('/api/order-badge', (req, res) => {
+    const { telegram_id } = req.body;
+
+    if (!telegram_id) {
+        return res.status(400).json({ message: 'Telegram ID is required' });
+    }
+
+    if (db) {
+        const query = `
+            UPDATE users
+            SET badge = 1
+            WHERE telegram_id = ?;
+        `;
+
+        db.query(query, [telegram_id], (err, result) => {
+            if (err) {
+                console.error('Database error:', err);
+                return res.status(500).json({ message: 'Database error' });
+            }
+
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ message: 'User not found' });
+            }
+
+            res.json({ message: 'Badge ordered successfully' });
+        });
+    } else {
+        res.status(500).json({ message: 'Database connection not available' });
+    }
+});
+
 // Handle 404s
 app.use((req, res) => {
     res.status(404).json({ error: 'Not found' });
