@@ -245,7 +245,6 @@ app.post('/api/order-badge', (req, res) => {
         return res.status(400).json({ message: 'Telegram ID is required' });
     }
 
-    if (db) {
         const query = `
             UPDATE users
             SET badge = 1
@@ -264,9 +263,6 @@ app.post('/api/order-badge', (req, res) => {
 
             res.json({ message: 'Badge ordered successfully' });
         });
-    } else {
-        res.status(500).json({ message: 'Database connection not available' });
-    }
 });
 
 // Handle 404s
