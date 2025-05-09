@@ -239,7 +239,7 @@ app.get('/test', (req, res) => {
 });
 
 app.post('/api/order-badge', (req, res) => {
-    const { telegram_id } = req.body;
+    const { telegram_id } = req.body.telegram_id || req.body;
 
     if (!telegram_id) {
         return res.status(400).json({ message: 'Telegram ID is required' });
