@@ -180,6 +180,26 @@ app.get('/api/telegram-auth', (req, res) => {
             return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=auth_expired');
         }
 
+        // check if the user wants to order a badge
+        if (telegramData.badge === 'true') {
+            console.log('User wants to order a badge');
+            // Handle badge login logic
+            const badgeQuery = `
+                UPDATE users
+                SET badge = 1
+                WHERE telegram_id = ?;
+            `;
+
+            db.query(badgeQuery, [telegramData.id], (err, result) => {
+                if (err) {
+                    console.error('Error updating badge status:', err);
+                    // Redirect to success page even if badge update fails
+                } else if (result.affectedRows === 0) {
+                    console.log('No user found to update badge status');
+                } else {
+                    console.log('Badge status updated successfully');
+                }
+            });
         if (db) {
             try {
                 const query = `
@@ -205,7 +225,7 @@ app.get('/api/telegram-auth', (req, res) => {
                         telegramData.photo_url,
                         authDate,
                         telegramData.type || 'Suiter',
-                        telegramData.badge === 'true' || false,
+                        telegramData.badge || false,
                     ],
                     (err) => {
                         if (err) {
@@ -239,30 +259,30 @@ app.get('/test', (req, res) => {
 });
 
 app.post('/api/order-badge', (req, res) => {
-    const { telegram_id } = req.body.telegram_id || req.body;
+    const { telegram_id } = req.body;
 
     if (!telegram_id) {
         return res.status(400).json({ message: 'Telegram ID is required' });
     }
 
-        const query = `
-            UPDATE users
-            SET badge = 1
-            WHERE telegram_id = ${telegram_id};
-        `;
+    const query = `
+        UPDATE users
+        SET badge = 1
+        WHERE telegram_id = ?;
+    `;
 
-        db.query(query, [telegram_id], (err, result) => {
-            if (err) {
-                console.error('Database error:', err);
-                return res.status(500).json({ message: 'Database error' });
-            }
+    db.query(query, [telegram_id], (err, result) => {
+        if (err) {
+            console.error('Database error:', err);
+            return res.status(500).json({ message: 'Database error' });
+        }
 
-            if (result.affectedRows === 0) {
-                return res.status(404).json({ message: 'User not found' });
-            }
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: 'User not found' });
+        }
 
-            res.json({ message: 'Badge ordered successfully' });
-        });
+        res.json({ message: 'Badge ordered successfully' });
+    });
 });
 
 // Handle 404s
