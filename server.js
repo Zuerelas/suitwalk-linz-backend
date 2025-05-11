@@ -125,9 +125,9 @@ function verifyTelegramAuth(data) {
         
         const secretKey = crypto.createHash('sha256').update(token).digest();
         
-        // Create data check string for validation
+        // Create data check string for validation - exclude custom parameters
         const dataCheckString = Object.keys(data)
-            .filter(key => key !== 'hash')
+            .filter(key => key !== 'hash' && !key.startsWith('custom_'))
             .sort()
             .map(key => `${key}=${data[key]}`)
             .join('\n');
