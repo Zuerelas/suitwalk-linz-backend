@@ -352,6 +352,74 @@ app.post('/api/order-badge', (req, res) => {
     });
 });
 
+// Add a secure endpoint to get registration data
+app.get('/api/registrations', (req, res) => {
+    // Basic API key authentication
+    const apiKey = req.headers['x-api-key'];
+    if (!apiKey || apiKey !== process.env.ADMIN_API_KEY) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    if (!db) {
+        return res.status(500).json({ error: 'Database connection not available' });
+    }
+
+    // Query to get all users with counts
+    const query = `
+        SELECT 
+            type,
+            COUNT(*) as count,
+            SUM(CASE WHEN badge = 1 THEN 1 ELSE 0 END) as badge_count
+        FROM users
+        GROUP BY type
+        ORDER BY count DESC;
+    `;
+
+    // Query to get detailed user data
+    const detailedQuery = `
+        SELECT 
+            telegram_id, 
+            first_name, 
+            last_name, 
+            username, 
+            photo_url, 
+            auth_date, 
+            type, 
+            badge,
+            created_at
+        FROM users
+        ORDER BY created_at DESC;
+    `;
+
+    // Execute both queries
+    db.query(query, (err, summaryResults) => {
+        if (err) {
+            console.error('Database query error:', err);
+            return res.status(500).json({ error: 'Database error' });
+        }
+
+        db.query(detailedQuery, (detailErr, detailResults) => {
+            if (detailErr) {
+                console.error('Database query error:', detailErr);
+                return res.status(500).json({ error: 'Database error' });
+            }
+
+            // Calculate totals
+            const totalUsers = detailResults.length;
+            const totalBadges = detailResults.reduce((sum, user) => sum + (user.badge ? 1 : 0), 0);
+
+            res.json({
+                summary: summaryResults,
+                details: detailResults,
+                totals: {
+                    users: totalUsers,
+                    badges: totalBadges
+                }
+            });
+        });
+    });
+});
+
 // Handle 404s
 app.use((req, res) => {
     res.status(404).json({ error: 'Not found' });
