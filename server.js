@@ -282,10 +282,10 @@ app.post('/api/order-badge', (req, res) => {
     const query = `
         UPDATE users
         SET badge = 1
-        WHERE telegram_id = ?;
+        WHERE telegram_id = ${db.escape(telegram_id)};
     `;
 
-    db.query(query, [telegram_id], (err, result) => {
+    db.query(query, (err, result) => {
         if (err) {
             console.error('Database error:', err);
             return res.status(500).json({ message: 'Database error' });
