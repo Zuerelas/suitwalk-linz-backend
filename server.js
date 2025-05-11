@@ -37,28 +37,38 @@ requiredEnvVars.forEach((envVar) => {
     }
 });
 
-// Database Connection with better error handling
+// Database Connection with connection pooling
 let db = null;
 if (process.env.DB_HOST && process.env.DB_USER && process.env.DB_PASSWORD && process.env.DB_NAME) {
     try {
-        db = mysql.createConnection({
+        db = mysql.createPool({
             host: process.env.DB_HOST,
             user: process.env.DB_USER,
             password: process.env.DB_PASSWORD,
             database: process.env.DB_NAME,
             port: 3306,
-            connectTimeout: 10000,
+            waitForConnections: true,
+            connectionLimit: 10,
+            queueLimit: 0
         });
-
-        db.connect((err) => {
+        
+        // Test the connection
+        db.getConnection((err, connection) => {
             if (err) {
                 console.error('Error connecting to the database:', err);
+                console.error('Connection details:', {
+                    host: process.env.DB_HOST,
+                    user: process.env.DB_USER,
+                    database: process.env.DB_NAME,
+                    port: 3306
+                });
                 db = null;
             } else {
                 console.log('Connected to the MySQL database.');
+                connection.release(); // Release the connection back to the pool
                 
                 // Ensure the users table exists
-                const createTableQuery = `
+                db.query(`
                     CREATE TABLE IF NOT EXISTS users (
                         id INT AUTO_INCREMENT PRIMARY KEY,
                         telegram_id BIGINT NOT NULL UNIQUE,
@@ -71,9 +81,7 @@ if (process.env.DB_HOST && process.env.DB_USER && process.env.DB_PASSWORD && pro
                         badge BOOLEAN DEFAULT false,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
-                `;
-                
-                db.query(createTableQuery, (tableErr) => {
+                `, (tableErr) => {
                     if (tableErr) {
                         console.error('Error creating users table:', tableErr);
                     } else {
