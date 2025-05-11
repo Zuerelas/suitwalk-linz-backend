@@ -183,7 +183,8 @@ app.get('/api/telegram-auth', (req, res) => {
     console.log('Query params:', req.query);
     
     const telegramData = req.query;
-    console.log('Telegram data:', telegramData);
+    console.log('Badge value:', telegramData.badge);
+    console.log('Type value:', telegramData.type);
     
     if (!telegramData || !telegramData.id) {
         console.error('No Telegram data received');
@@ -229,7 +230,7 @@ app.get('/api/telegram-auth', (req, res) => {
                 photo_url = VALUES(photo_url),
                 auth_date = VALUES(auth_date),
                 type = VALUES(type)
-                ${telegramData.badge === 'true' ? ', badge = TRUE' : ''};
+                ${telegramData.badge === 'true' ? ', badge = 1' : ''};
             `;
 
             db.query(
@@ -242,7 +243,7 @@ app.get('/api/telegram-auth', (req, res) => {
                     telegramData.photo_url || '',
                     authDate,
                     telegramData.type || 'Suiter',
-                    telegramData.badge || false,
+                    telegramData.badge === 'true' ? 1 : 0,
                 ],
                 (err) => {
                     if (err) {
