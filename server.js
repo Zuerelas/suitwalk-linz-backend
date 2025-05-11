@@ -37,7 +37,7 @@ requiredEnvVars.forEach((envVar) => {
     }
 });
 
-// Database Connection with connection pooling
+// Database Connection with improved connection pooling
 let db = null;
 if (process.env.DB_HOST && process.env.DB_USER && process.env.DB_PASSWORD && process.env.DB_NAME) {
     try {
@@ -48,23 +48,35 @@ if (process.env.DB_HOST && process.env.DB_USER && process.env.DB_PASSWORD && pro
             database: process.env.DB_NAME,
             port: 3306,
             waitForConnections: true,
-            connectionLimit: 10,
-            queueLimit: 0
+            connectionLimit: 5,
+            queueLimit: 0,
+            enableKeepAlive: true,
+            keepAliveInitialDelay: 10000,
+            connectTimeout: 30000,
+            ssl: process.env.DB_SSL === 'true' ? true : undefined
         });
         
-        // Test the connection
+        console.log('Database pool created with configuration:', {
+            host: process.env.DB_HOST,
+            user: process.env.DB_USER,
+            database: process.env.DB_NAME,
+            port: 3306,
+            ssl: process.env.DB_SSL === 'true' ? true : undefined
+        });
+        
+        // Test the connection immediately
         db.getConnection((err, connection) => {
             if (err) {
                 console.error('Error connecting to the database:', err);
-                console.error('Connection details:', {
-                    host: process.env.DB_HOST,
-                    user: process.env.DB_USER,
-                    database: process.env.DB_NAME,
-                    port: 3306
+                console.error('Connection error details:', {
+                    code: err.code,
+                    errno: err.errno,
+                    sqlState: err.sqlState,
+                    sqlMessage: err.sqlMessage
                 });
-                db = null;
+                // Don't set db to null, just log the error
             } else {
-                console.log('Connected to the MySQL database.');
+                console.log('Connected to the MySQL database successfully');
                 connection.release(); // Release the connection back to the pool
                 
                 // Ensure the users table exists
@@ -78,7 +90,7 @@ if (process.env.DB_HOST && process.env.DB_USER && process.env.DB_PASSWORD && pro
                         photo_url TEXT,
                         auth_date DATETIME,
                         type VARCHAR(50) DEFAULT 'Suiter',
-                        badge VARCHAR(255) DEFAULT 'false',
+                        badge BOOLEAN DEFAULT false,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                 `, (tableErr) => {
@@ -93,6 +105,8 @@ if (process.env.DB_HOST && process.env.DB_USER && process.env.DB_PASSWORD && pro
     } catch (error) {
         console.error('Error initializing database connection:', error);
     }
+} else {
+    console.error('Database configuration missing. Required environment variables: DB_HOST, DB_USER, DB_PASSWORD, DB_NAME');
 }
 
 // Improved Telegram Authentication Verification
@@ -188,51 +202,62 @@ app.get('/api/telegram-auth', (req, res) => {
             return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=auth_expired');
         }
 
+        // Check if database is available
         if (!db) {
             console.error('Database connection is not available');
             return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
         }
 
-        // Prepare the query to insert or update user
-        const query = `
-            INSERT INTO users (telegram_id, first_name, last_name, username, photo_url, auth_date, type, badge)
-            VALUES (?, ?, ?, ?, ?, FROM_UNIXTIME(?), ?, ?)
-            ON DUPLICATE KEY UPDATE
-            first_name = VALUES(first_name),
-            last_name = VALUES(last_name),
-            username = VALUES(username),
-            photo_url = VALUES(photo_url),
-            auth_date = VALUES(auth_date),
-            type = VALUES(type)
-            ${telegramData.badge === 'true' ? ', badge = 1' : ''};
-        `;
-
-        db.query(
-            query,
-            [
-                telegramData.id,
-                telegramData.first_name,
-                telegramData.last_name,
-                telegramData.username,
-                telegramData.photo_url,
-                authDate,
-                telegramData.type || 'Suiter',
-                telegramData.badge === 'true' ? 1 : 0,
-            ],
-            (err) => {
-                if (err) {
-                    console.error('Database error:', err);
-                    return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
-                }
-                
-                console.log('User data saved successfully');
-                if (telegramData.badge === 'true') {
-                    console.log('Badge status set to 1');
-                }
-                
-                return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/erfolgreich');
+        // Test database connection before proceeding
+        db.getConnection((connErr, connection) => {
+            if (connErr) {
+                console.error('Failed to get database connection:', connErr);
+                return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
             }
-        );
+            
+            connection.release(); // Release the connection immediately
+            
+            // Prepare the query to insert or update user
+            const query = `
+                INSERT INTO users (telegram_id, first_name, last_name, username, photo_url, auth_date, type, badge)
+                VALUES (?, ?, ?, ?, ?, FROM_UNIXTIME(?), ?, ?)
+                ON DUPLICATE KEY UPDATE
+                first_name = VALUES(first_name),
+                last_name = VALUES(last_name),
+                username = VALUES(username),
+                photo_url = VALUES(photo_url),
+                auth_date = VALUES(auth_date),
+                type = VALUES(type)
+                ${telegramData.badge === 'true' ? ', badge = TRUE' : ''};
+            `;
+
+            db.query(
+                query,
+                [
+                    telegramData.id,
+                    telegramData.first_name,
+                    telegramData.last_name || '',
+                    telegramData.username || '',
+                    telegramData.photo_url || '',
+                    authDate,
+                    telegramData.type || 'Suiter',
+                    telegramData.badge === 'true' ? true : false,
+                ],
+                (err) => {
+                    if (err) {
+                        console.error('Database query error:', err);
+                        return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
+                    }
+                    
+                    console.log('User data saved successfully');
+                    if (telegramData.badge === 'true') {
+                        console.log('Badge status set to TRUE');
+                    }
+                    
+                    return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/erfolgreich');
+                }
+            );
+        });
     } catch (error) {
         console.error('General error:', error);
         return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=server_error');
