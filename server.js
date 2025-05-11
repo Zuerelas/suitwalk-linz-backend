@@ -78,7 +78,7 @@ if (process.env.DB_HOST && process.env.DB_USER && process.env.DB_PASSWORD && pro
                         photo_url TEXT,
                         auth_date DATETIME,
                         type VARCHAR(50) DEFAULT 'Suiter',
-                        badge BOOLEAN DEFAULT false,
+                        badge VARCHAR(255) DEFAULT 'false',
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                 `, (tableErr) => {
