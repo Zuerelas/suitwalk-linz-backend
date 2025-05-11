@@ -183,6 +183,7 @@ app.get('/api/telegram-auth', (req, res) => {
     console.log('Query params:', req.query);
     
     const telegramData = req.query;
+    console.log('Telegram data:', telegramData);
     
     if (!telegramData || !telegramData.id) {
         console.error('No Telegram data received');
