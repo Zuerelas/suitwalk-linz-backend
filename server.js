@@ -159,14 +159,14 @@ app.get('/', (req, res) => {
 app.get('/api/telegram-auth', (req, res) => {
     console.log('Received Telegram auth request');
     console.log('Query params:', req.query);
-    
+
     const telegramData = req.query;
-    
+
     if (!telegramData || !telegramData.id) {
         console.error('No Telegram data received');
         return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=no_data');
     }
-    
+
     try {
         if (!verifyTelegramAuth(telegramData)) {
             console.error('Invalid Telegram authentication');
@@ -180,10 +180,9 @@ app.get('/api/telegram-auth', (req, res) => {
             return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=auth_expired');
         }
 
-        // check if the user wants to order a badge
+        // Update badge status if requested
         if (telegramData.badge === 'true') {
             console.log('User wants to order a badge');
-            // Handle badge login logic
             const badgeQuery = `
                 UPDATE users
                 SET badge = 1
@@ -193,61 +192,56 @@ app.get('/api/telegram-auth', (req, res) => {
             db.query(badgeQuery, [telegramData.id], (err, result) => {
                 if (err) {
                     console.error('Error updating badge status:', err);
-                    // Redirect to success page even if badge update fails
-                } else if (result.affectedRows === 0) {
+                    return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=server_error');
+                }
+
+                if (result.affectedRows === 0) {
                     console.log('No user found to update badge status');
                 } else {
                     console.log('Badge status updated successfully');
                 }
             });
-        if (db) {
-            try {
-                const query = `
-                    INSERT INTO users (telegram_id, first_name, last_name, username, photo_url, auth_date, type, badge)
-                    VALUES (?, ?, ?, ?, ?, FROM_UNIXTIME(?), ?, ?)
-                    ON DUPLICATE KEY UPDATE
-                    first_name = VALUES(first_name),
-                    last_name = VALUES(last_name),
-                    username = VALUES(username),
-                    photo_url = VALUES(photo_url),
-                    auth_date = VALUES(auth_date),
-                    type = VALUES(type),
-                    badge = VALUES(badge);
-                `;
+        }
 
-                db.query(
-                    query,
-                    [
-                        telegramData.id,
-                        telegramData.first_name,
-                        telegramData.last_name,
-                        telegramData.username,
-                        telegramData.photo_url,
-                        authDate,
-                        telegramData.type || 'Suiter',
-                        telegramData.badge || false,
-                    ],
-                    (err) => {
-                        if (err) {
-                            console.error('Database error:', err);
-                            // Still redirect to success page even if DB operation fails
-                        }
-                        console.log('User data saved successfully');
-                        res.redirect('https://test.suitwalk-linz.at/#/anmeldung/erfolgreich');
-                    }
-                );
-            } catch (dbError) {
-                console.error('Database operation error:', dbError);
-                res.redirect('https://test.suitwalk-linz.at/#/anmeldung/erfolgreich');
+        // Insert or update user data
+        const query = `
+            INSERT INTO users (telegram_id, first_name, last_name, username, photo_url, auth_date, type, badge)
+            VALUES (?, ?, ?, ?, ?, FROM_UNIXTIME(?), ?, ?)
+            ON DUPLICATE KEY UPDATE
+            first_name = VALUES(first_name),
+            last_name = VALUES(last_name),
+            username = VALUES(username),
+            photo_url = VALUES(photo_url),
+            auth_date = VALUES(auth_date),
+            type = VALUES(type),
+            badge = VALUES(badge);
+        `;
+
+        db.query(
+            query,
+            [
+                telegramData.id,
+                telegramData.first_name,
+                telegramData.last_name,
+                telegramData.username,
+                telegramData.photo_url,
+                authDate,
+                telegramData.type || 'Suiter',
+                telegramData.badge || false,
+            ],
+            (err) => {
+                if (err) {
+                    console.error('Database error:', err);
+                    return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=server_error');
+                }
+
+                console.log('User data saved successfully');
+                return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/erfolgreich');
             }
-        } else {
-            console.log('No database connection, skipping data storage');
-            res.redirect('https://test.suitwalk-linz.at/#/anmeldung/erfolgreich');
-        }
-        }
+        );
     } catch (error) {
         console.error('General error:', error);
-        res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=server_error');
+        return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=server_error');
     }
 });
 
