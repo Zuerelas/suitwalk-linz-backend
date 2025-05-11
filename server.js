@@ -241,7 +241,7 @@ app.get('/api/telegram-auth', (req, res) => {
                     telegramData.photo_url || '',
                     authDate,
                     telegramData.type || 'Suiter',
-                    telegramData.badge === 'true' ? true : false,
+                    telegramData.badge || false,
                 ],
                 (err) => {
                     if (err) {
@@ -250,7 +250,7 @@ app.get('/api/telegram-auth', (req, res) => {
                     }
                     
                     console.log('User data saved successfully');
-                    if (telegramData.badge === 'true') {
+                    if (telegramData.badge) {
                         console.log('Badge status set to TRUE');
                     }
                     
