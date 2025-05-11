@@ -159,14 +159,14 @@ app.get('/', (req, res) => {
 app.get('/api/telegram-auth', (req, res) => {
     console.log('Received Telegram auth request');
     console.log('Query params:', req.query);
-
+    
     const telegramData = req.query;
-
+    
     if (!telegramData || !telegramData.id) {
         console.error('No Telegram data received');
         return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=no_data');
     }
-
+    
     try {
         if (!verifyTelegramAuth(telegramData)) {
             console.error('Invalid Telegram authentication');
@@ -180,30 +180,12 @@ app.get('/api/telegram-auth', (req, res) => {
             return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=auth_expired');
         }
 
-        // Update badge status if requested
-        if (telegramData.badge === 'true') {
-            console.log('User wants to order a badge');
-            const badgeQuery = `
-                UPDATE users
-                SET badge = 1
-                WHERE telegram_id = ?;
-            `;
-
-            db.query(badgeQuery, [telegramData.id], (err, result) => {
-                if (err) {
-                    console.error('Error updating badge status:', err);
-                    return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=server_error');
-                }
-
-                if (result.affectedRows === 0) {
-                    console.log('No user found to update badge status');
-                } else {
-                    console.log('Badge status updated successfully');
-                }
-            });
+        if (!db) {
+            console.error('Database connection is not available');
+            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
         }
 
-        // Insert or update user data
+        // Prepare the query to insert or update user
         const query = `
             INSERT INTO users (telegram_id, first_name, last_name, username, photo_url, auth_date, type, badge)
             VALUES (?, ?, ?, ?, ?, FROM_UNIXTIME(?), ?, ?)
@@ -213,8 +195,8 @@ app.get('/api/telegram-auth', (req, res) => {
             username = VALUES(username),
             photo_url = VALUES(photo_url),
             auth_date = VALUES(auth_date),
-            type = VALUES(type),
-            badge = VALUES(badge);
+            type = VALUES(type)
+            ${telegramData.badge === 'true' ? ', badge = 1' : ''};
         `;
 
         db.query(
@@ -227,15 +209,19 @@ app.get('/api/telegram-auth', (req, res) => {
                 telegramData.photo_url,
                 authDate,
                 telegramData.type || 'Suiter',
-                telegramData.badge || false,
+                telegramData.badge === 'true' ? 1 : 0,
             ],
             (err) => {
                 if (err) {
                     console.error('Database error:', err);
-                    return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=server_error');
+                    return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
                 }
-
+                
                 console.log('User data saved successfully');
+                if (telegramData.badge === 'true') {
+                    console.log('Badge status set to 1');
+                }
+                
                 return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/erfolgreich');
             }
         );
