@@ -161,12 +161,12 @@ app.get('/api/telegram-auth', (req, res) => {
     console.log('Query params:', req.query);
     
     const telegramData = req.query;
-
+    
     if (!telegramData || !telegramData.id) {
         console.error('No Telegram data received');
         return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=no_data');
     }
-
+    
     try {
         if (!verifyTelegramAuth(telegramData)) {
             console.error('Invalid Telegram authentication');
@@ -243,6 +243,7 @@ app.get('/api/telegram-auth', (req, res) => {
         } else {
             console.log('No database connection, skipping data storage');
             res.redirect('https://test.suitwalk-linz.at/#/anmeldung/erfolgreich');
+        }
         }
     } catch (error) {
         console.error('General error:', error);
