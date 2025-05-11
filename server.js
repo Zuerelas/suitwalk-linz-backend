@@ -183,8 +183,13 @@ app.get('/api/telegram-auth', (req, res) => {
     console.log('Query params:', req.query);
     
     const telegramData = req.query;
-    console.log('Badge value:', telegramData.badge);
-    console.log('Type value:', telegramData.type);
+    
+    // Read custom parameters from the query string (these will be preserved after Telegram auth)
+    const customType = req.query.custom_type;
+    const customBadge = req.query.custom_badge;
+    
+    console.log('Custom badge value:', customBadge);
+    console.log('Custom type value:', customType);
     
     if (!telegramData || !telegramData.id) {
         console.error('No Telegram data received');
@@ -230,7 +235,7 @@ app.get('/api/telegram-auth', (req, res) => {
                 photo_url = VALUES(photo_url),
                 auth_date = VALUES(auth_date),
                 type = VALUES(type)
-                ${telegramData.badge === 'true' ? ', badge = 1' : ''};
+                ${customBadge === 'true' ? ', badge = 1' : ''};
             `;
 
             db.query(
@@ -242,8 +247,8 @@ app.get('/api/telegram-auth', (req, res) => {
                     telegramData.username || '',
                     telegramData.photo_url || '',
                     authDate,
-                    telegramData.type || 'Suiter',
-                    telegramData.badge === 'true' ? 1 : 0,
+                    customType || 'Suiter', // Use customType instead of telegramData.type
+                    customBadge === 'true' ? 1 : 0, // Use customBadge instead of telegramData.badge
                 ],
                 (err) => {
                     if (err) {
@@ -252,7 +257,7 @@ app.get('/api/telegram-auth', (req, res) => {
                     }
                     
                     console.log('User data saved successfully');
-                    if (telegramData.badge) {
+                    if (customBadge === 'true') {
                         console.log('Badge status set to TRUE');
                     }
                     
