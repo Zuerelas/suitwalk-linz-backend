@@ -424,6 +424,84 @@ app.get('/api/registrations', (req, res) => {
     });
 });
 
+// Public statistics endpoint - no authentication required
+app.get('/api/public-stats', (req, res) => {
+    console.log('Received request for public stats');
+    
+    if (!db) {
+        console.error('Database connection not available for public stats');
+        return res.status(500).json({ error: 'Database connection not available' });
+    }
+
+    // Query to get counts by type
+    const query = `
+        SELECT 
+            type,
+            COUNT(*) as count,
+            SUM(CASE WHEN badge = 1 THEN 1 ELSE 0 END) as badge_count
+        FROM users
+        GROUP BY type
+        ORDER BY count DESC;
+    `;
+
+    // Execute query
+    db.query(query, (err, summaryResults) => {
+        if (err) {
+            console.error('Database query error in public-stats:', err);
+            return res.status(500).json({ error: 'Database error' });
+        }
+
+        // Get total counts without detailed user info
+        const totalQuery = `
+            SELECT 
+                COUNT(*) as total_users,
+                SUM(CASE WHEN badge = 1 THEN 1 ELSE 0 END) as total_badges
+            FROM users;
+        `;
+
+        db.query(totalQuery, (totalErr, totalResults) => {
+            if (totalErr) {
+                console.error('Database query error in public-stats totals:', totalErr);
+                return res.status(500).json({ error: 'Database error' });
+            }
+
+            // Query for attendee list (names only, no personal data)
+            const attendeeQuery = `
+                SELECT 
+                    first_name,
+                    type,
+                    badge
+                FROM users
+                ORDER BY created_at DESC;
+            `;
+
+            db.query(attendeeQuery, (attendeeErr, attendeeResults) => {
+                if (attendeeErr) {
+                    console.error('Database query error in public-stats attendees:', attendeeErr);
+                    return res.status(500).json({ error: 'Database error' });
+                }
+
+                // Set explicit headers to ensure proper JSON and CORS
+                res.header("Access-Control-Allow-Origin", "*");
+                res.header("Access-Control-Allow-Headers", "Content-Type, Accept");
+                res.setHeader('Content-Type', 'application/json');
+                
+                // Return the data
+                res.json({
+                    summary: summaryResults || [],
+                    totals: {
+                        users: totalResults[0]?.total_users || 0,
+                        badges: totalResults[0]?.total_badges || 0
+                    },
+                    attendees: attendeeResults || []
+                });
+                
+                console.log('Public stats sent successfully');
+            });
+        });
+    });
+});
+
 // Handle 404s
 app.use((req, res) => {
     res.status(404).json({ error: 'Not found' });
