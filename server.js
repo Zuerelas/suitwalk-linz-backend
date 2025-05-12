@@ -6,7 +6,10 @@ require('dotenv').config();
 
 const app = express();
 app.use(bodyParser.json());
-
+// but before your custom endpoints
+const router = require('./router');
+console.log('Router module loaded');
+app.use('/api/router', router); // Change the mount path to avoid conflicts
 app.use((req, res, next) => {
     console.log(`Request received: ${req.method} ${req.url}`);
     next();
@@ -499,10 +502,6 @@ app.use((err, req, res, next) => {
     console.error('Unhandled error:', err);
     res.status(500).json({ error: 'Server error' });
 });
-
-const router = require('./router');
-console.log('Router module loaded');
-app.use('/api', router);
 
 // Start server if not running as a module
 if (require.main === module) {
