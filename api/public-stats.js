@@ -2,10 +2,10 @@ const mysql = require('mysql2');
 require('dotenv').config();
 
 module.exports = async (req, res) => {
-    // Set CORS headers
+    // Set more permissive CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Cache-Control, X-Requested-With');
     res.setHeader('Content-Type', 'application/json');
     
     // Handle OPTIONS request for CORS preflight
@@ -83,7 +83,7 @@ module.exports = async (req, res) => {
         return res.status(200).json(response);
     } catch (error) {
         console.error('Error in public-stats API:', error);
-        return res.status(500).json({ error: 'Database error' });
+        return res.status(500).json({ error: 'Database error', message: error.message });
     } finally {
         db.end(); // Close the connection
     }
