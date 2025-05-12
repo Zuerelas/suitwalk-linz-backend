@@ -7,34 +7,6 @@ require('dotenv').config();
 const app = express();
 app.use(bodyParser.json());
 
-// Add this simplified endpoint for testing first
-app.get('/api/public-stats', (req, res) => {
-    console.log('Received request for public stats - TEST VERSION');
-    
-    try {
-        // Return a simple test response
-        const testResponse = {
-            summary: [
-                { type: "Suiter", count: 10, badge_count: 5 },
-                { type: "Spotter", count: 5, badge_count: 2 }
-            ],
-            totals: {
-                users: 15,
-                badges: 7
-            }
-        };
-        
-        // Set explicit headers and ensure proper JSON response
-        res.setHeader('Content-Type', 'application/json');
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.status(200).send(JSON.stringify(testResponse));
-        console.log('Test response sent successfully');
-    } catch (error) {
-        console.error('Error in test endpoint:', error);
-        res.status(500).json({ error: 'Server error', details: error.message });
-    }
-});
-
 // Then include your router and other middleware
 const router = require('./router');
 console.log('Router module loaded');
