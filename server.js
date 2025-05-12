@@ -422,7 +422,10 @@ app.get('/api/registrations', (req, res) => {
 
 // Public statistics endpoint - no authentication required
 app.get('/api/public-stats', (req, res) => {
+    console.log('Received request for public stats');
+    
     if (!db) {
+        console.error('Database connection not available for public stats');
         return res.status(500).json({ error: 'Database connection not available' });
     }
 
@@ -437,12 +440,15 @@ app.get('/api/public-stats', (req, res) => {
         ORDER BY count DESC;
     `;
 
+    console.log('Executing type count query');
     // Execute query
     db.query(query, (err, summaryResults) => {
         if (err) {
-            console.error('Database query error:', err);
+            console.error('Database query error in public-stats:', err);
             return res.status(500).json({ error: 'Database error' });
         }
+
+        console.log('Type count query results:', summaryResults);
 
         // Get total counts without detailed user info
         const totalQuery = `
@@ -452,19 +458,33 @@ app.get('/api/public-stats', (req, res) => {
             FROM users;
         `;
 
+        console.log('Executing totals query');
         db.query(totalQuery, (totalErr, totalResults) => {
             if (totalErr) {
-                console.error('Database query error:', totalErr);
+                console.error('Database query error in public-stats totals:', totalErr);
                 return res.status(500).json({ error: 'Database error' });
             }
 
-            res.json({
-                summary: summaryResults,
+            console.log('Totals query results:', totalResults);
+
+            // Make sure we have proper totals before sending
+            const users = totalResults && totalResults[0] ? totalResults[0].total_users || 0 : 0;
+            const badges = totalResults && totalResults[0] ? totalResults[0].total_badges || 0 : 0;
+            
+            const response = {
+                summary: summaryResults || [],
                 totals: {
-                    users: totalResults[0].total_users,
-                    badges: totalResults[0].total_badges
+                    users: users,
+                    badges: badges
                 }
-            });
+            };
+            
+            console.log('Sending public stats response:', response);
+            
+            // Set explicit headers to ensure proper JSON
+            res.setHeader('Content-Type', 'application/json');
+            res.send(JSON.stringify(response));
+            console.log('Public stats response sent');
         });
     });
 });
