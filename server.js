@@ -277,6 +277,24 @@ app.get('/api/telegram-auth', (req, res) => {
                         }
                     );
                 });
+            } else if (customType === 'Abmelden') {
+                // User wants to unregister, delete user
+                const deleteQuery = `DELETE FROM users WHERE telegram_id = ?`;
+                
+                db.query(deleteQuery, [telegramData.id], (deleteErr, result) => {
+                    if (deleteErr) {
+                        console.error('Database delete error:', deleteErr);
+                        return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
+                    }
+                    
+                    if (result.affectedRows === 0) {
+                        console.log('No user found to delete');
+                        return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=not_registered');
+                    }
+                    
+                    console.log('User successfully deleted');
+                    return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/abgemeldet');
+                });
             } else {
                 // Normal registration, insert or update user
                 const query = `
