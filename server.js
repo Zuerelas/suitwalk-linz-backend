@@ -321,6 +321,69 @@ app.get('/api/telegram-auth', (req, res) => {
     }
 });
 
+// Handle user deletion
+app.get('/api/telegram-delete', async (req, res) => {
+    console.log('Received request to delete user');
+    
+    const telegramData = req.query;
+    
+    if (!telegramData || !telegramData.id) {
+        console.error('No Telegram data received');
+        return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=no_data');
+    }
+    
+    try {
+        if (!verifyTelegramAuth(telegramData)) {
+            console.error('Invalid Telegram authentication');
+            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=invalid_auth');
+        }
+
+        const authDate = parseInt(telegramData.auth_date, 10);
+        const currentTime = Math.floor(Date.now() / 1000);
+        if (currentTime - authDate > 86400) {
+            console.error('Authentication expired');
+            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=auth_expired');
+        }
+
+        // Check if database is available
+        if (!db) {
+            console.error('Database connection is not available');
+            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
+        }
+
+        // Test database connection before proceeding
+        db.getConnection((connErr, connection) => {
+            if (connErr) {
+                console.error('Failed to get database connection:', connErr);
+                return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
+            }
+            
+            connection.release(); // Release the connection immediately
+            
+            // Delete the user from the database
+            const deleteQuery = `DELETE FROM users WHERE telegram_id = ?`;
+            
+            db.query(deleteQuery, [telegramData.id], (deleteErr, result) => {
+                if (deleteErr) {
+                    console.error('Database delete error:', deleteErr);
+                    return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
+                }
+                
+                if (result.affectedRows === 0) {
+                    console.log('No user found to delete');
+                    return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=not_registered');
+                }
+                
+                console.log('User successfully deleted');
+                return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/abgemeldet');
+            });
+        });
+    } catch (error) {
+        console.error('General error:', error);
+        return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=server_error');
+    }
+});
+
 // Test endpoint
 app.get('/test', (req, res) => {
     res.json({ 
