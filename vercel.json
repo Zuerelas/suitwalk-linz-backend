@@ -2,14 +2,24 @@
   "version": 2,
   "builds": [
     {
-      "src": "api/index.js",
+      "src": "server.js",
       "use": "@vercel/node"
     }
   ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "/api/index.js"
+      "dest": "server.js"
     }
-  ]
+  ],
+  "env": {
+    "DB_HOST": "@db_host",
+    "DB_USER": "@db_user",
+    "DB_PASSWORD": "@db_password",
+    "DB_NAME": "@db_name",
+    "TELEGRAM_BOT_TOKEN": "@telegram_bot_token",
+    "ADMIN_USERNAME": "@admin_username",
+    "ADMIN_PASSWORD": "@admin_password",
+    "PHOTOGRAPHER_API_KEY": "@photographer_api_key"
+  }
 }
