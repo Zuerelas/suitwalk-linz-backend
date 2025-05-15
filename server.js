@@ -1131,3 +1131,218 @@ app.post('/api/admin/login', (req, res) => {
     res.status(401).json({ error: 'Invalid credentials' });
   }
 });
+
+// Add this endpoint to get event dates for dropdown
+app.get('/api/gallery/event-dates', (req, res) => {
+  const photoDb = createPhotoDbConnection();
+  
+  // Check for existing dates in photos table
+  const photoDatesQuery = `
+    SELECT DISTINCT DATE_FORMAT(event_date, '%Y-%m-%d') as date
+    FROM photos
+    ORDER BY event_date DESC
+  `;
+  
+  // Get dates from suitwalks database too
+  const suitwalksDb = createSuitwalksDbConnection();
+  const suitwalkDatesQuery = `
+    SELECT DISTINCT DATE_FORMAT(date, '%Y-%m-%d') as date
+    FROM events
+    WHERE date >= DATE_SUB(NOW(), INTERVAL 1 YEAR)
+    ORDER BY date DESC
+  `;
+  
+  photoDb.query(photoDatesQuery, (err, photoResults) => {
+    if (err) {
+      photoDb.end();
+      return res.status(500).json({ error: 'Database error' });
+    }
+    
+    suitwalksDb.query(suitwalkDatesQuery, (err, eventResults) => {
+      suitwalksDb.end();
+      photoDb.end();
+      
+      if (err) {
+        return res.status(500).json({ error: 'Database error' });
+      }
+      
+      // Combine both results and remove duplicates
+      const allDates = [...photoResults, ...eventResults].map(item => item.date);
+      const uniqueDates = [...new Set(allDates)].sort().reverse();
+      
+      res.json({ dates: uniqueDates });
+    });
+  });
+});
+
+// Modify the authentication for photo uploads
+function authenticatePhotographer(req, res, next) {
+  // 1. Check for API key
+  const photographerKey = req.body.photographerKey;
+  if (!photographerKey || photographerKey !== process.env.PHOTOGRAPHER_API_KEY) {
+    return res.status(401).json({ error: 'Invalid photographer key' });
+  }
+  
+  // 2. Check for Telegram data
+  const telegramData = req.body.telegramData;
+  if (!telegramData || !telegramData.id) {
+    return res.status(401).json({ error: 'Missing Telegram authentication' });
+  }
+  
+  // Check hash from Telegram to verify authenticity
+  if (!verifyTelegramAuth(telegramData)) {
+    return res.status(401).json({ error: 'Invalid Telegram authentication' });
+  }
+  
+  // Authentication successful
+  next();
+}
+
+// Replace the old authenticateUser with this for photo uploads
+app.post('/api/gallery/upload', authenticatePhotographer, (req, res) => {
+  const uploadDir = path.join(__dirname, 'public', 'gallery');
+  
+  // Get photographer details from Telegram data
+  const telegramData = req.body.telegramData;
+  const photographerName = telegramData.first_name + (telegramData.last_name ? ' ' + telegramData.last_name : '');
+  
+  // Create or get photographer ID
+  const photoDb = createPhotoDbConnection();
+  
+  // Find or create photographer based on Telegram ID
+  photoDb.query(
+    'SELECT id FROM photographers WHERE telegram_id = ?',
+    [telegramData.id],
+    (err, results) => {
+      if (err) {
+        photoDb.end();
+        return res.status(500).json({ error: 'Database error' });
+      }
+      
+      let photographerId;
+      
+      if (results.length === 0) {
+        // Create new photographer
+        photoDb.query(
+          'INSERT INTO photographers (name, telegram_id, username) VALUES (?, ?, ?)',
+          [photographerName, telegramData.id, telegramData.username || ''],
+          (err, result) => {
+            if (err) {
+              photoDb.end();
+              return res.status(500).json({ error: 'Database error' });
+            }
+            
+            photographerId = result.insertId;
+            processUpload(photographerId);
+          }
+        );
+      } else {
+        // Use existing photographer
+        photographerId = results[0].id;
+        processUpload(photographerId);
+      }
+    }
+  );
+  
+  function processUpload(photographerId) {
+    // Continue with the upload process
+    // Using the existing multer configuration
+    const upload = multer({
+      storage: multer.diskStorage({
+        destination: (req, file, cb) => {
+          const { eventDate } = req.body;
+          
+          // Create both full and thumbnail directories
+          const fullDir = path.join(uploadDir, eventDate, photographerId.toString(), 'full');
+          const thumbDir = path.join(uploadDir, eventDate, photographerId.toString(), 'thumbnails');
+          
+          // Create directories if they don't exist
+          fs.mkdirSync(fullDir, { recursive: true });
+          fs.mkdirSync(thumbDir, { recursive: true });
+          
+          cb(null, fullDir); // Store originals in full dir
+        },
+        filename: (req, file, cb) => {
+          // Generate safer filenames
+          const timestamp = Date.now();
+          const originalName = file.originalname.replace(/[^a-zA-Z0-9.]/g, '_');
+          cb(null, `${timestamp}-${originalName}`);
+        }
+      }),
+      limits: {
+        fileSize: 15 * 1024 * 1024 // 15MB limit
+      }
+    }).array('photos', 50);
+    
+    upload(req, res, async (err) => {
+      // Existing upload handling code
+      if (err) {
+        console.error('Upload error:', err);
+        return res.status(500).json({ error: 'File upload error', details: err.message });
+      }
+      
+      try {
+        const { eventDate, tags, title } = req.body;
+        const files = req.files || [];
+        
+        if (files.length === 0) {
+          photoDb.end();
+          return res.status(400).json({ error: 'No files uploaded' });
+        }
+        
+        // Process each file
+        for (const file of files) {
+          // Create thumbnail path
+          const thumbDir = path.join(uploadDir, eventDate, photographerId.toString(), 'thumbnails');
+          const thumbPath = path.join(thumbDir, file.filename);
+          
+          // Get dimensions with sharp
+          const metadata = await sharp(file.path).metadata();
+          
+          // Generate thumbnail
+          await sharp(file.path)
+            .resize(400, null, { fit: 'inside' })
+            .jpeg({ quality: 80 })
+            .toFile(thumbPath);
+          
+          // Save to database
+          await photoDb.promise().execute(
+            `INSERT INTO photos (
+              filename, 
+              event_date, 
+              photographer_id, 
+              file_size, 
+              width, 
+              height, 
+              title,
+              tags
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              file.filename,
+              eventDate,
+              photographerId,
+              file.size,
+              metadata.width,
+              metadata.height,
+              title || null,
+              tags || null
+            ]
+          );
+        }
+        
+        photoDb.end();
+        
+        res.status(200).json({ 
+          success: true, 
+          message: `${files.length} files uploaded successfully`,
+          files: files.map(f => f.filename)
+        });
+        
+      } catch (error) {
+        photoDb.end();
+        console.error('Error during upload processing:', error);
+        res.status(500).json({ error: 'Upload processing error', details: error.message });
+      }
+    });
+  }
+});
