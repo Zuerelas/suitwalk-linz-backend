@@ -1158,3 +1158,348 @@ function authenticatePhotographer(req, res, next) {
   // Authentication successful
   next();
 }
+
+// Add these endpoints after the existing gallery endpoints
+
+// Get users who could be added as photographers
+app.get('/api/admin/potential-photographers', authenticateUser, async (req, res) => {
+  try {
+    // Connect to both databases
+    const suitwalksDb = createSuitwalksDbConnection();
+    const photoDb = createPhotoDbConnection();
+    
+    // First get all existing photographer telegram_ids
+    const [existingPhotographers] = await photoDb.promise().query(
+      'SELECT telegram_id FROM photographers WHERE telegram_id IS NOT NULL'
+    );
+    
+    // Create an array of existing telegram IDs for filtering
+    const existingIds = existingPhotographers.map(p => p.telegram_id.toString());
+    
+    // Now get users from suitwalks DB who aren't already photographers
+    const [users] = await suitwalksDb.promise().query(
+      'SELECT telegram_id, first_name, last_name, username, photo_url, type FROM users ORDER BY first_name, last_name'
+    );
+    
+    // Filter out users who are already photographers
+    const potentialPhotographers = users.filter(user => 
+      !existingIds.includes(user.telegram_id.toString())
+    );
+    
+    photoDb.end();
+    suitwalksDb.end();
+    
+    res.json({ users: potentialPhotographers });
+    
+  } catch (error) {
+    console.error('Error fetching potential photographers:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Add a user as photographer
+app.post('/api/admin/add-photographer', authenticateUser, async (req, res) => {
+  try {
+    const { telegram_id } = req.body;
+    
+    if (!telegram_id) {
+      return res.status(400).json({ error: 'Telegram ID is required' });
+    }
+    
+    // Get user details from suitwalks DB
+    const suitwalksDb = createSuitwalksDbConnection();
+    const [users] = await suitwalksDb.promise().query(
+      'SELECT telegram_id, first_name, last_name, username FROM users WHERE telegram_id = ?',
+      [telegram_id]
+    );
+    
+    if (users.length === 0) {
+      suitwalksDb.end();
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    const user = users[0];
+    const photographerName = `${user.first_name} ${user.last_name || ''}`.trim();
+    
+    // Add to photographers table
+    const photoDb = createPhotoDbConnection();
+    
+    // Check if photographer with this telegram_id already exists
+    const [existing] = await photoDb.promise().query(
+      'SELECT id FROM photographers WHERE telegram_id = ?',
+      [telegram_id]
+    );
+    
+    if (existing.length > 0) {
+      photoDb.end();
+      suitwalksDb.end();
+      return res.status(409).json({ error: 'Photographer already exists' });
+    }
+    
+    // Insert the new photographer
+    const [result] = await photoDb.promise().execute(
+      'INSERT INTO photographers (name, telegram_id, username) VALUES (?, ?, ?)',
+      [photographerName, telegram_id, user.username || null]
+    );
+    
+    photoDb.end();
+    suitwalksDb.end();
+    
+    res.json({
+      success: true,
+      photographer: {
+        id: result.insertId,
+        name: photographerName,
+        telegram_id: telegram_id,
+        username: user.username
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error adding photographer:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Authentication middleware for admin routes
+const authenticateAdmin = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized: Missing or invalid token' });
+  }
+  
+  const token = authHeader.split(' ')[1];
+  if (token !== process.env.PHOTOGRAPHER_API_KEY) {
+    return res.status(401).json({ error: 'Unauthorized: Invalid token' });
+  }
+  
+  next();
+};
+
+// Get photographers from Suitwalk database
+app.get('/api/admin/photographers/suitwalk', authenticateAdmin, (req, res) => {
+  const suitwalksDb = createSuitwalksDbConnection();
+  
+  suitwalksDb.query(
+    `SELECT 
+      id, name, email, telegram_username, telegram_id, profile_image, badge,
+      role, bio, created_at, last_login 
+     FROM users 
+     WHERE role IN ('photographer', 'admin')
+     ORDER BY name ASC`,
+    (err, results) => {
+      suitwalksDb.end();
+      
+      if (err) {
+        console.error('Error fetching Suitwalk photographers:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+      
+      res.json({ photographers: results });
+    }
+  );
+});
+
+// Get photographers from Gallery database
+app.get('/api/admin/photographers/gallery', authenticateAdmin, (req, res) => {
+  const photoDb = createPhotoDbConnection();
+  
+  photoDb.query(
+    `SELECT 
+      id, name, email, telegram_id, telegram_username, photo_count,
+      created_at, last_upload 
+     FROM photographers 
+     ORDER BY name ASC`,
+    (err, results) => {
+      photoDb.end();
+      
+      if (err) {
+        console.error('Error fetching gallery photographers:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+      
+      // Get photo counts for each photographer
+      const photoDb2 = createPhotoDbConnection();
+      photoDb2.query(
+        `SELECT photographer_id, COUNT(*) as count FROM photos GROUP BY photographer_id`,
+        (err, photoCounts) => {
+          photoDb2.end();
+          
+          if (err) {
+            console.error('Error fetching photo counts:', err);
+            return res.json({ photographers: results });
+          }
+          
+          // Map photo counts to photographers
+          const countMap = {};
+          photoCounts.forEach(row => {
+            countMap[row.photographer_id] = row.count;
+          });
+          
+          // Add photo count to each photographer
+          results.forEach(photographer => {
+            photographer.photo_count = countMap[photographer.id] || 0;
+          });
+          
+          res.json({ photographers: results });
+        }
+      );
+    }
+  );
+});
+
+// Add a photographer from Suitwalk to Gallery
+app.post('/api/admin/photographers/add', authenticateAdmin, (req, res) => {
+  const { suitwalkId } = req.body;
+  
+  if (!suitwalkId) {
+    return res.status(400).json({ error: 'Missing suitwalk photographer ID' });
+  }
+  
+  // Get photographer details from Suitwalk database
+  const suitwalksDb = createSuitwalksDbConnection();
+  
+  suitwalksDb.query(
+    `SELECT 
+      id, name, email, telegram_username, telegram_id, profile_image
+     FROM users 
+     WHERE id = ?`,
+    [suitwalkId],
+    (err, results) => {
+      suitwalksDb.end();
+      
+      if (err || results.length === 0) {
+        console.error('Error fetching Suitwalk photographer:', err);
+        return res.status(500).json({ error: 'Failed to fetch photographer details' });
+      }
+      
+      const photographer = results[0];
+      
+      // Check if photographer already exists in Gallery database
+      const photoDb = createPhotoDbConnection();
+      
+      photoDb.query(
+        'SELECT id FROM photographers WHERE telegram_id = ? OR (email = ? AND email IS NOT NULL AND email != "")',
+        [photographer.telegram_id || null, photographer.email || null],
+        (err, existingResults) => {
+          if (err) {
+            photoDb.end();
+            console.error('Error checking existing photographer:', err);
+            return res.status(500).json({ error: 'Database error' });
+          }
+          
+          if (existingResults.length > 0) {
+            photoDb.end();
+            return res.status(409).json({ 
+              error: 'Photographer already exists in gallery database',
+              existingId: existingResults[0].id
+            });
+          }
+          
+          // Add photographer to Gallery database
+          photoDb.query(
+            `INSERT INTO photographers 
+              (name, email, telegram_username, telegram_id, created_at) 
+             VALUES (?, ?, ?, ?, NOW())`,
+            [
+              photographer.name,
+              photographer.email || null,
+              photographer.telegram_username || null,
+              photographer.telegram_id || null
+            ],
+            (err, result) => {
+              photoDb.end();
+              
+              if (err) {
+                console.error('Error adding photographer to gallery:', err);
+                return res.status(500).json({ error: 'Failed to add photographer to gallery' });
+              }
+              
+              res.json({ 
+                success: true, 
+                message: 'Photographer added successfully',
+                photographerId: result.insertId
+              });
+            }
+          );
+        }
+      );
+    }
+  );
+});
+
+// Update existing photographer in Gallery database
+app.put('/api/admin/photographers/:id', authenticateAdmin, (req, res) => {
+  const { id } = req.params;
+  const { name, email, telegram_username, telegram_id } = req.body;
+  
+  const photoDb = createPhotoDbConnection();
+  
+  photoDb.query(
+    `UPDATE photographers 
+     SET name = ?, email = ?, telegram_username = ?, telegram_id = ?
+     WHERE id = ?`,
+    [name, email || null, telegram_username || null, telegram_id || null, id],
+    (err, result) => {
+      photoDb.end();
+      
+      if (err) {
+        console.error('Error updating photographer:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+      
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: 'Photographer not found' });
+      }
+      
+      res.json({ success: true, message: 'Photographer updated successfully' });
+    }
+  );
+});
+
+// Delete photographer from Gallery database
+app.delete('/api/admin/photographers/:id', authenticateAdmin, (req, res) => {
+  const { id } = req.params;
+  const photoDb = createPhotoDbConnection();
+  
+  // Check if photographer has photos
+  photoDb.query(
+    'SELECT COUNT(*) as photoCount FROM photos WHERE photographer_id = ?',
+    [id],
+    (err, results) => {
+      if (err) {
+        photoDb.end();
+        console.error('Error checking photographer photos:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+      
+      if (results[0].photoCount > 0) {
+        photoDb.end();
+        return res.status(409).json({ 
+          error: 'Cannot delete photographer with existing photos',
+          photoCount: results[0].photoCount
+        });
+      }
+      
+      // Delete photographer if they have no photos
+      photoDb.query(
+        'DELETE FROM photographers WHERE id = ?',
+        [id],
+        (err, result) => {
+          photoDb.end();
+          
+          if (err) {
+            console.error('Error deleting photographer:', err);
+            return res.status(500).json({ error: 'Database error' });
+          }
+          
+          if (result.affectedRows === 0) {
+            return res.status(404).json({ error: 'Photographer not found' });
+          }
+          
+          res.json({ success: true, message: 'Photographer deleted successfully' });
+        }
+      );
+    }
+  );
+});
