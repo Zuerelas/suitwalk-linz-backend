@@ -13,23 +13,57 @@ app.use(bodyParser.json());
 
 // Add these helper functions after imports
 function createSuitwalksDbConnection() {
-  return mysql.createConnection({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME, // suitwalks
-    ssl: process.env.DB_SSL === 'true' ? true : undefined
-  });
+  try {
+    const connection = mysql.createConnection({
+      host: process.env.DB_HOST,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME, // suitwalks
+      ssl: process.env.DB_SSL === 'true' ? true : undefined,
+      connectTimeout: 10000, // 10 second timeout
+      acquireTimeout: 10000
+    });
+    
+    // Add connection error handler
+    connection.on('error', (err) => {
+      console.error('Database connection error:', err);
+      if (err.code === 'PROTOCOL_CONNECTION_LOST') {
+        console.error('Database connection lost. Will not reconnect automatically.');
+      }
+    });
+    
+    return connection;
+  } catch (error) {
+    console.error('Error creating database connection:', error);
+    throw error;
+  }
 }
 
 function createPhotoDbConnection() {
-  return mysql.createConnection({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: 'Photo',
-    ssl: process.env.DB_SSL === 'true' ? true : undefined
-  });
+  try {
+    const connection = mysql.createConnection({
+      host: process.env.DB_HOST,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      database: 'Photo',
+      ssl: process.env.DB_SSL === 'true' ? true : undefined,
+      connectTimeout: 10000, // 10 second timeout
+      acquireTimeout: 10000
+    });
+    
+    // Add connection error handler
+    connection.on('error', (err) => {
+      console.error('Photo database connection error:', err);
+      if (err.code === 'PROTOCOL_CONNECTION_LOST') {
+        console.error('Photo database connection lost. Will not reconnect automatically.');
+      }
+    });
+    
+    return connection;
+  } catch (error) {
+    console.error('Error creating photo database connection:', error);
+    throw error;
+  }
 }
 
 // Then include your router and other middleware
@@ -1143,7 +1177,19 @@ app.get('/api/test-endpoint', (req, res) => {
 
 // Add this endpoint to get event dates for dropdown
 app.get('/api/gallery/event-dates', (req, res) => {
-  const photoDb = createPhotoDbConnection();
+  console.log('Event dates endpoint called');
+  
+  // Try to connect to the database with error handling
+  let photoDb;
+  try {
+    photoDb = createPhotoDbConnection();
+  } catch (error) {
+    console.error('Error creating photo database connection:', error);
+    return res.status(500).json({ 
+      error: 'Database connection error',
+      dates: [new Date().toISOString().split('T')[0]] // Return today as fallback
+    });
+  }
   
   // Check for existing dates in photos table
   const photoDatesQuery = `
@@ -1152,35 +1198,61 @@ app.get('/api/gallery/event-dates', (req, res) => {
     ORDER BY event_date DESC
   `;
   
-  // Get dates from suitwalks database too
-  const suitwalksDb = createSuitwalksDbConnection();
-  const suitwalkDatesQuery = `
-    SELECT DISTINCT DATE_FORMAT(date, '%Y-%m-%d') as date
-    FROM events
-    WHERE date >= DATE_SUB(NOW(), INTERVAL 1 YEAR)
-    ORDER BY date DESC
-  `;
-  
   photoDb.query(photoDatesQuery, (err, photoResults) => {
     if (err) {
+      console.error('Error querying photo dates:', err);
       photoDb.end();
-      return res.status(500).json({ error: 'Database error' });
+      return res.status(500).json({ 
+        error: 'Database query error',
+        dates: [new Date().toISOString().split('T')[0]] // Return today as fallback
+      });
     }
     
-    suitwalksDb.query(suitwalkDatesQuery, (err, eventResults) => {
-      suitwalksDb.end();
+    // Create set of dates from photos
+    let allDates = new Set(photoResults.map(row => row.date));
+    
+    // Try to get dates from suitwalks database too
+    try {
+      const suitwalksDb = createSuitwalksDbConnection();
+      
+      suitwalksDb.query(
+        `SELECT DISTINCT DATE_FORMAT(date, '%Y-%m-%d') as date
+         FROM events
+         WHERE date >= DATE_SUB(NOW(), INTERVAL 1 YEAR)
+         ORDER BY date DESC`,
+        (suitwalksErr, eventResults) => {
+          if (suitwalksDb) suitwalksDb.end();
+          if (photoDb) photoDb.end();
+          
+          if (!suitwalksErr && eventResults) {
+            // Add suitwalk dates to our set
+            eventResults.forEach(row => allDates.add(row.date));
+          }
+          
+          // Convert set back to array and sort
+          const dateArray = Array.from(allDates).sort().reverse();
+          
+          // Always include today's date if we have no dates
+          if (dateArray.length === 0) {
+            dateArray.push(new Date().toISOString().split('T')[0]);
+          }
+          
+          // Send the response
+          res.json({ dates: dateArray });
+        }
+      );
+    } catch (suitwalksError) {
+      console.error('Error with suitwalks database:', suitwalksError);
       photoDb.end();
       
-      if (err) {
-        return res.status(500).json({ error: 'Database error' });
+      // Just return photo dates if we have any
+      const dateArray = Array.from(allDates);
+      if (dateArray.length === 0) {
+        dateArray.push(new Date().toISOString().split('T')[0]);
       }
       
-      // Combine both results and remove duplicates
-      const allDates = [...photoResults, ...eventResults].map(item => item.date);
-      const uniqueDates = [...new Set(allDates)].sort().reverse();
-      
-      res.json({ dates: uniqueDates });
-    });
+      res.json({ dates: dateArray });
+    }
   });
 });
 
