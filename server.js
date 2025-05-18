@@ -1167,9 +1167,34 @@ app.get('/api/test-endpoint', (req, res) => {
 // Add this endpoint to get event dates for dropdown
 app.get('/api/gallery/dates-events', (req, res) => {
   console.log('Event dates endpoint called');
-  console.log('Request headers:', req.headers);
-  console.log('Request method:', req.method);
-  res.json({ message: 'Endpoint is reachable' });
+
+  const photoDb = createPhotoDbConnection();
+
+  // Query to get distinct event dates
+  const query = `
+    SELECT DISTINCT DATE_FORMAT(event_date, '%Y-%m-%d') as date
+    FROM photos
+    ORDER BY event_date DESC
+  `;
+
+  photoDb.query(query, (err, results) => {
+    if (err) {
+      console.error('Database query error:', err);
+      photoDb.end();
+      return res.status(500).json({ error: 'Database query error' });
+    }
+
+    // Extract dates from the query results
+    const dates = results.map(row => row.date);
+
+    // Always include today's date if no dates are found
+    if (dates.length === 0) {
+      dates.push(new Date().toISOString().split('T')[0]);
+    }
+
+    photoDb.end();
+    res.json({ dates });
+  });
 });
 
 // Modify the authentication for photo uploads
