@@ -1076,22 +1076,62 @@ app.get('/api/gallery/download/:id', async (req, res) => {
   }
 });
 
-// Admin login endpoint
+// Admin login endpoint with enhanced debugging
 app.post('/api/admin/login', (req, res) => {
-  const { password, username } = req.body;
-  console.log('Admin login attempt:', username);
+  console.log('==== ADMIN LOGIN ENDPOINT TRIGGERED ====');
+  console.log('Request headers:', {
+    'content-type': req.headers['content-type'],
+    'origin': req.headers.origin,
+    'host': req.headers.host,
+    'authorization': req.headers.authorization ? 'Present' : 'None'
+  });
   
-  // Simple authentication check
+  console.log('Request body type:', typeof req.body);
+  
+  // Safety check for body parsing
+  if (!req.body || typeof req.body !== 'object') {
+    console.error('Invalid request body format:', req.body);
+    return res.status(400).json({ error: 'Invalid request body' });
+  }
+  
+  const { username, password } = req.body;
+  console.log('Admin login attempt:', username);
+  console.log('Password provided:', password ? '********' : 'None');
+  
+  // Log environment variables (partially masked)
+  console.log('Environment variables check:', {
+    'ADMIN_USERNAME exists': !!process.env.ADMIN_USERNAME,
+    'ADMIN_PASSWORD exists': !!process.env.ADMIN_PASSWORD,
+    'PHOTOGRAPHER_API_KEY exists': !!process.env.PHOTOGRAPHER_API_KEY,
+    'Expected username': process.env.ADMIN_USERNAME ? 
+      `${process.env.ADMIN_USERNAME.substring(0, 1)}****` : 'Not set',
+    'Environment username comparison': username === process.env.ADMIN_USERNAME ? 'Match' : 'No match'
+  });
+  
+  // Simple authentication check with detailed logging
   if (username === process.env.ADMIN_USERNAME && password === process.env.ADMIN_PASSWORD) {
     const token = process.env.PHOTOGRAPHER_API_KEY;
     console.log('Admin login successful:', username);
-    res.json({
+    console.log('Sending response with token');
+    
+    res.status(200).json({
       user: { username },
-      token: token
+      token: token ? `${token.substring(0, 3)}...` : 'None'
     });
   } else {
+    console.log('Authentication failed. Sending 401 response');
+    console.log('Username match:', username === process.env.ADMIN_USERNAME);
+    console.log('Password match:', password === process.env.ADMIN_PASSWORD);
+    
     res.status(401).json({ error: 'Invalid credentials' });
   }
+  console.log('==== ADMIN LOGIN ENDPOINT COMPLETED ====');
+});
+
+// Add a test endpoint to verify the server is responding
+app.get('/api/test-endpoint', (req, res) => {
+  console.log('Test endpoint called');
+  res.json({ status: 'ok', message: 'Server is running and responding to API requests' });
 });
 
 // Add this endpoint to get event dates for dropdown
