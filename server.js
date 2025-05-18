@@ -875,23 +875,13 @@ function authenticateUser(req, res, next) {
   }
 }
 
-// Handle 404s
-app.use((req, res) => {
-    res.status(404).json({ error: 'Not found' });
-});
-
-// Error handler
-app.use((err, req, res, next) => {
-    console.error('Unhandled error:', err);
-    res.status(500).json({ error: 'Server error' });
-});
 
 // Start server if not running as a module
 if (require.main === module) {
-    const PORT = process.env.PORT || 3000;
-    app.listen(PORT, () => {
-        console.log(`Server is running on http://localhost:${PORT}`);
-    });
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`Server is running on http://localhost:${PORT}`);
+  });
 }
 
 // Export the app for Vercel
@@ -937,6 +927,7 @@ app.post('/api/gallery/photographers', authenticateUser, (req, res) => {
     photoDb.end();
   });
 });
+
 
 // Implement complete file upload with thumbnail generation
 app.post('/api/gallery/upload', authenticateUser, (req, res) => {
@@ -1779,4 +1770,15 @@ app.get('/api/test-endpoint', (req, res) => {
       hasPhotographerKey: !!process.env.PHOTOGRAPHER_API_KEY,
     }
   });
+});
+
+// Handle 404s
+app.use((req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
+
+// Error handler
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Server error' });
 });
