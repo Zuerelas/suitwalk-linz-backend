@@ -1131,7 +1131,14 @@ app.post('/api/admin/login', (req, res) => {
 // Add a test endpoint to verify the server is responding
 app.get('/api/test-endpoint', (req, res) => {
   console.log('Test endpoint called');
-  res.json({ status: 'ok', message: 'Server is running and responding to API requests' });
+  res.json({ 
+    status: 'ok', 
+    message: 'Server is running and responding to API requests',
+    env: {
+      hasToken: !!process.env.TELEGRAM_BOT_TOKEN,
+      hasPhotographerKey: !!process.env.PHOTOGRAPHER_API_KEY,
+    }
+  });
 });
 
 // Add this endpoint to get event dates for dropdown
@@ -1543,4 +1550,234 @@ app.delete('/api/admin/photographers/:id', authenticateAdmin, (req, res) => {
       );
     }
   );
+});
+
+// Add this debug middleware specifically for the photo upload endpoint
+app.use('/api/gallery/upload', (req, res, next) => {
+  console.log('==== PHOTO UPLOAD REQUEST ====');
+  console.log('Content-Type:', req.headers['content-type']);
+  console.log('Has req.body:', !!req.body);
+  if (req.body) {
+    console.log('Body keys:', Object.keys(req.body));
+    if (req.body.photographerKey) {
+      console.log('Has photographer key');
+    }
+    if (req.body.telegramData) {
+      console.log('Has telegramData object');
+    }
+    // Check for flat keys that might be Telegram data
+    const telegramKeys = ['id', 'first_name', 'last_name', 'username', 'photo_url', 'auth_date', 'hash'];
+    const hasTelegramKeys = telegramKeys.some(key => req.body[key]);
+    if (hasTelegramKeys) {
+      console.log('Has individual Telegram keys');
+    }
+  }
+  next();
+});
+
+// Replace the photo upload endpoint with this improved version
+app.post('/api/gallery/upload', (req, res) => {
+  // Configure multer first to parse the form data
+  const uploadDir = path.join(__dirname, 'public', 'gallery');
+  if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+  }
+  
+  // Create multer instance for initial form parsing
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 15 * 1024 * 1024 }
+  }).array('photos', 50); 
+  
+  // Use multer to parse the form data
+  upload(req, res, async (err) => {
+    if (err) {
+      console.error('Upload parsing error:', err);
+      return res.status(500).json({ error: 'File upload error', details: err.message });
+    }
+    
+    console.log('Files received:', req.files ? req.files.length : 0);
+    
+    try {
+      // Now verify photographer key
+      const photographerKey = req.body.photographerKey;
+      if (!photographerKey || photographerKey !== process.env.PHOTOGRAPHER_API_KEY) {
+        console.error('Invalid photographer key');
+        return res.status(401).json({ error: 'Invalid photographer key' });
+      }
+      
+      // Process Telegram data - handle both formats:
+      // 1. As a stringified JSON object in telegramData field
+      // 2. As individual fields (id, first_name, etc.)
+      let telegramData = {};
+      
+      if (req.body.telegramData) {
+        // If telegramData is provided as a string, parse it
+        try {
+          telegramData = typeof req.body.telegramData === 'string' 
+            ? JSON.parse(req.body.telegramData) 
+            : req.body.telegramData;
+        } catch (e) {
+          console.error('Error parsing telegramData:', e);
+        }
+      } else {
+        // Check if Telegram fields are provided directly
+        const telegramFields = ['id', 'first_name', 'last_name', 'username', 'photo_url', 'auth_date', 'hash'];
+        const hasSomeFields = telegramFields.some(field => req.body[field]);
+        
+        if (hasSomeFields) {
+          telegramFields.forEach(field => {
+            if (req.body[field]) telegramData[field] = req.body[field];
+          });
+        } else {
+          // Check for array-style notation
+          for (const key in req.body) {
+            if (key.startsWith('telegramData[')) {
+              const cleanKey = key.replace('telegramData[', '').replace(']', '');
+              telegramData[cleanKey] = req.body[key];
+            }
+          }
+        }
+      }
+      
+      console.log('Parsed Telegram data:', { 
+        ...telegramData, 
+        hash: telegramData.hash ? telegramData.hash.substring(0, 8) + '...' : 'missing' 
+      });
+      
+      if (!telegramData.id) {
+        console.error('Missing Telegram ID');
+        return res.status(401).json({ error: 'Missing Telegram authentication data' });
+      }
+      
+      // Now we have the files and authentication data, proceed with upload
+      const { eventDate, tags, title } = req.body;
+      const files = req.files || [];
+      
+      if (files.length === 0) {
+        return res.status(400).json({ error: 'No files uploaded' });
+      }
+      
+      const photoDb = createPhotoDbConnection();
+      const photographerName = `${telegramData.first_name || ''} ${telegramData.last_name || ''}`.trim();
+      
+      // Find or create photographer based on Telegram ID
+      let photographerId;
+      const [photographers] = await photoDb.promise().query(
+        'SELECT id FROM photographers WHERE telegram_id = ?',
+        [telegramData.id]
+      );
+      
+      if (photographers.length === 0) {
+        // Create new photographer
+        const [result] = await photoDb.promise().query(
+          'INSERT INTO photographers (name, telegram_id, username) VALUES (?, ?, ?)',
+          [photographerName, telegramData.id, telegramData.username || '']
+        );
+        photographerId = result.insertId;
+        console.log('Created new photographer:', photographerId);
+      } else {
+        photographerId = photographers[0].id;
+        
+        // Update photographer name if needed
+        await photoDb.promise().query(
+          'UPDATE photographers SET name = ?, username = ?, last_upload = NOW() WHERE id = ?',
+          [photographerName, telegramData.username || '', photographerId]
+        );
+        console.log('Updated existing photographer:', photographerId);
+      }
+      
+      // Now create directories for this upload
+      const photographerUploadDir = path.join(uploadDir, eventDate, telegramData.id.toString());
+      const fullDir = path.join(photographerUploadDir, 'full');
+      const thumbDir = path.join(photographerUploadDir, 'thumbnails');
+      
+      fs.mkdirSync(fullDir, { recursive: true });
+      fs.mkdirSync(thumbDir, { recursive: true });
+      
+      console.log('Created directories:', { fullDir, thumbDir });
+      
+      // Process each file
+      const processedFiles = [];
+      
+      for (const file of files) {
+        // Create unique filename
+        const timestamp = Date.now();
+        const safeFilename = file.originalname.replace(/[^a-zA-Z0-9.]/g, '_');
+        const filename = `${timestamp}-${safeFilename}`;
+        
+        // Save original file
+        const originalPath = path.join(fullDir, filename);
+        fs.writeFileSync(originalPath, file.buffer);
+        
+        // Generate thumbnail
+        const thumbnailPath = path.join(thumbDir, filename);
+        
+        // Get dimensions & create thumbnail with sharp
+        const metadata = await sharp(file.buffer).metadata();
+        await sharp(file.buffer)
+          .resize(400, null, { fit: 'inside' })
+          .jpeg({ quality: 80 })
+          .toFile(thumbnailPath);
+        
+        // Save to database
+        const [result] = await photoDb.promise().execute(
+          `INSERT INTO photos (
+            filename, 
+            event_date, 
+            photographer_id, 
+            file_size, 
+            width, 
+            height, 
+            title,
+            tags,
+            upload_date
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+          [
+            filename,
+            eventDate,
+            photographerId,
+            file.size,
+            metadata.width,
+            metadata.height,
+            title || null,
+            tags || null
+          ]
+        );
+        
+        processedFiles.push({
+          id: result.insertId,
+          filename: filename,
+          title: title || null
+        });
+        
+        console.log(`Processed file: ${filename}, database ID: ${result.insertId}`);
+      }
+      
+      photoDb.end();
+      
+      res.status(200).json({ 
+        success: true, 
+        message: `${files.length} files uploaded successfully`,
+        files: processedFiles
+      });
+      
+    } catch (error) {
+      console.error('Error during upload processing:', error);
+      res.status(500).json({ error: 'Upload processing error', details: error.message });
+    }
+  });
+});
+
+// Also fix your TelegramLoginWidget to store data properly
+app.get('/api/test-endpoint', (req, res) => {
+  console.log('Test endpoint called');
+  res.json({ 
+    status: 'ok', 
+    message: 'Server is running and responding to API requests',
+    env: {
+      hasToken: !!process.env.TELEGRAM_BOT_TOKEN,
+      hasPhotographerKey: !!process.env.PHOTOGRAPHER_API_KEY,
+    }
+  });
 });
