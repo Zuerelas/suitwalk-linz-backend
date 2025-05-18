@@ -45,7 +45,7 @@ function createPhotoDbConnection() {
       host: process.env.DB_HOST,
       user: process.env.DB_USER,
       password: process.env.DB_PASSWORD,
-      database: 'Photo',
+      database: 'Photos',
       ssl: process.env.DB_SSL === 'true' ? true : undefined,
       connectTimeout: 10000, // 10 second timeout
       acquireTimeout: 10000
