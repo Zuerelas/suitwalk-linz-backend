@@ -1178,82 +1178,9 @@ app.get('/api/test-endpoint', (req, res) => {
 // Add this endpoint to get event dates for dropdown
 app.get('/api/gallery/event-dates', (req, res) => {
   console.log('Event dates endpoint called');
-  
-  // Try to connect to the database with error handling
-  let photoDb;
-  try {
-    photoDb = createPhotoDbConnection();
-  } catch (error) {
-    console.error('Error creating photo database connection:', error);
-    return res.status(500).json({ 
-      error: 'Database connection error',
-      dates: [new Date().toISOString().split('T')[0]] // Return today as fallback
-    });
-  }
-  
-  // Check for existing dates in photos table
-  const photoDatesQuery = `
-    SELECT DISTINCT DATE_FORMAT(event_date, '%Y-%m-%d') as date
-    FROM photos
-    ORDER BY event_date DESC
-  `;
-  
-  photoDb.query(photoDatesQuery, (err, photoResults) => {
-    if (err) {
-      console.error('Error querying photo dates:', err);
-      photoDb.end();
-      return res.status(500).json({ 
-        error: 'Database query error',
-        dates: [new Date().toISOString().split('T')[0]] // Return today as fallback
-      });
-    }
-    
-    // Create set of dates from photos
-    let allDates = new Set(photoResults.map(row => row.date));
-    
-    // Try to get dates from suitwalks database too
-    try {
-      const suitwalksDb = createSuitwalksDbConnection();
-      
-      suitwalksDb.query(
-        `SELECT DISTINCT DATE_FORMAT(date, '%Y-%m-%d') as date
-         FROM events
-         WHERE date >= DATE_SUB(NOW(), INTERVAL 1 YEAR)
-         ORDER BY date DESC`,
-        (suitwalksErr, eventResults) => {
-          if (suitwalksDb) suitwalksDb.end();
-          if (photoDb) photoDb.end();
-          
-          if (!suitwalksErr && eventResults) {
-            // Add suitwalk dates to our set
-            eventResults.forEach(row => allDates.add(row.date));
-          }
-          
-          // Convert set back to array and sort
-          const dateArray = Array.from(allDates).sort().reverse();
-          
-          // Always include today's date if we have no dates
-          if (dateArray.length === 0) {
-            dateArray.push(new Date().toISOString().split('T')[0]);
-          }
-          
-          // Send the response
-          res.json({ dates: dateArray });
-        }
-      );
-    } catch (suitwalksError) {
-      console.error('Error with suitwalks database:', suitwalksError);
-      photoDb.end();
-      
-      // Just return photo dates if we have any
-      const dateArray = Array.from(allDates);
-      if (dateArray.length === 0) {
-        dateArray.push(new Date().toISOString().split('T')[0]);
-      }
-      
-      res.json({ dates: dateArray });
-    }
-  });
+  console.log('Request headers:', req.headers);
+  console.log('Request method:', req.method);
+  res.json({ message: 'Endpoint is reachable' });
 });
 
 // Modify the authentication for photo uploads
