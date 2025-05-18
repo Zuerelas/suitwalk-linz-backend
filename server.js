@@ -251,6 +251,10 @@ app.get('/api/telegram-auth', (req, res) => {
     
     console.log('Custom badge value:', customBadge);
     console.log('Custom type value:', customType);
+
+    if (customType === 'photo-upload') {
+      return;
+    }
     
     if (!telegramData || !telegramData.id) {
         console.error('No Telegram data received');
