@@ -1176,7 +1176,7 @@ app.get('/api/test-endpoint', (req, res) => {
 });
 
 // Add this endpoint to get event dates for dropdown
-app.get('/api/gallery/event-dates', (req, res) => {
+app.get('/api/gallery/dates-events', (req, res) => {
   console.log('Event dates endpoint called');
   console.log('Request headers:', req.headers);
   console.log('Request method:', req.method);
