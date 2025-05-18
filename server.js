@@ -1078,7 +1078,7 @@ app.get('/api/gallery/download/:id', async (req, res) => {
 
 // Admin login endpoint
 app.post('/api/admin/login', (req, res) => {
-  const { username, password } = req.body;
+  const { password, username } = req.body;
   
   // Simple authentication check
   if (username === process.env.ADMIN_USERNAME && password === process.env.ADMIN_PASSWORD) {
