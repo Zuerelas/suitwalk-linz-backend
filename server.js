@@ -1079,11 +1079,12 @@ app.get('/api/gallery/download/:id', async (req, res) => {
 // Admin login endpoint
 app.post('/api/admin/login', (req, res) => {
   const { password, username } = req.body;
+  console.log('Admin login attempt:', username);
   
   // Simple authentication check
   if (username === process.env.ADMIN_USERNAME && password === process.env.ADMIN_PASSWORD) {
     const token = process.env.PHOTOGRAPHER_API_KEY;
-    
+    console.log('Admin login successful:', username);
     res.json({
       user: { username },
       token: token
