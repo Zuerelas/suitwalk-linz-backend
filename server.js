@@ -253,7 +253,7 @@ app.get('/api/telegram-auth', (req, res) => {
     console.log('Custom type value:', customType);
 
     if (customType === 'photo_upload') {
-      return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/photo-upload');
+      return res.redirect('https://test.suitwalk-linz.at/#/galerie/upload');
     }
     
     if (!telegramData || !telegramData.id) {
