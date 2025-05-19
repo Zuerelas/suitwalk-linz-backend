@@ -252,7 +252,7 @@ app.get('/api/telegram-auth', (req, res) => {
     console.log('Custom badge value:', customBadge);
     console.log('Custom type value:', customType);
 
-    if (customType === 'photo-upload') {
+    if (customType === 'photo_upload') {
       return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/photo-upload');
     }
     
