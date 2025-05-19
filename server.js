@@ -699,90 +699,76 @@ app.get('/api/gallery/event/:date', (req, res) => {
 });
 
 // Add upload endpoint for authenticated photographers
-app.post('/api/gallery/upload', (req, res) => {
-  // Check for photographer key first
-  const photographerKey = req.body.photographerKey;
-  if (!photographerKey || photographerKey !== process.env.PHOTOGRAPHER_API_KEY) {
-    return res.status(401).json({ error: 'Invalid photographer key' });
-  }
-  
-  // Check for Telegram data
-  const telegramDataObj = {};
-  for (const key in req.body) {
-    if (key.startsWith('telegramData[')) {
-      const cleanKey = key.replace('telegramData[', '').replace(']', '');
-      telegramDataObj[cleanKey] = req.body[key];
+app.post('/api/gallery/upload', async (req, res) => {
+  try {
+    // Validate photographer key
+    const photographerKey = req.body.photographerKey;
+    if (!photographerKey || photographerKey !== process.env.PHOTOGRAPHER_API_KEY) {
+      return res.status(401).json({ error: 'Invalid photographer key' });
     }
-  }
-  
-  if (!telegramDataObj.id) {
-    return res.status(401).json({ error: 'Missing Telegram authentication' });
-  }
-  
-  const uploadDir = path.join(__dirname, 'public', 'gallery');
-  
-  // Create base uploads directory if it doesn't exist
-  if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-  }
-  
-  // Process the upload with photographer data from Telegram
-  const upload = multer({
-    storage: multer.diskStorage({
-      destination: (req, file, cb) => {
-        const { eventDate } = req.body;
-        const photographerName = `${telegramDataObj.first_name}${telegramDataObj.last_name ? '_' + telegramDataObj.last_name : ''}`;
-        const photographerId = telegramDataObj.id;
-        
-        // Create both full and thumbnail directories
-        const fullDir = path.join(uploadDir, eventDate, photographerId.toString(), 'full');
-        const thumbDir = path.join(uploadDir, eventDate, photographerId.toString(), 'thumbnails');
-        
-        // Create directories if they don't exist
-        fs.mkdirSync(fullDir, { recursive: true });
-        fs.mkdirSync(thumbDir, { recursive: true });
-        
-        cb(null, fullDir); // Store originals in full dir
-      },
-      filename: (req, file, cb) => {
-        // Generate safer filenames
-        const timestamp = Date.now();
-        const originalName = file.originalname.replace(/[^a-zA-Z0-9.]/g, '_');
-        cb(null, `${timestamp}-${originalName}`);
+
+    // Parse Telegram data
+    const telegramData = req.body.telegramData ? JSON.parse(req.body.telegramData) : null;
+    if (!telegramData || telegramData.type !== 'photo_upload') {
+      return res.status(401).json({ error: 'Unauthorized: Invalid Telegram user type' });
+    }
+
+    // Verify Telegram authentication
+    if (!verifyTelegramAuth(telegramData)) {
+      return res.status(401).json({ error: 'Invalid Telegram authentication' });
+    }
+
+    // Validate event date
+    const { eventDate, tags, title } = req.body;
+    if (!eventDate) {
+      return res.status(400).json({ error: 'Event date is required' });
+    }
+
+    // Handle file uploads
+    const uploadDir = path.join(__dirname, 'public', 'gallery');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+
+    const upload = multer({
+      storage: multer.diskStorage({
+        destination: (req, file, cb) => {
+          const fullDir = path.join(uploadDir, eventDate, telegramData.id.toString(), 'full');
+          fs.mkdirSync(fullDir, { recursive: true });
+          cb(null, fullDir);
+        },
+        filename: (req, file, cb) => {
+          const timestamp = Date.now();
+          const safeFilename = file.originalname.replace(/[^a-zA-Z0-9.]/g, '_');
+          cb(null, `${timestamp}-${safeFilename}`);
+        },
+      }),
+      limits: { fileSize: 15 * 1024 * 1024 }, // 15MB limit
+    }).array('photos', 50); // Accept up to 50 photos
+
+    upload(req, res, async (err) => {
+      if (err) {
+        console.error('Upload error:', err);
+        return res.status(500).json({ error: 'File upload error', details: err.message });
       }
-    }),
-    limits: {
-      fileSize: 15 * 1024 * 1024 // 15MB limit
-    }
-  }).array('photos', 50); // Accept up to 50 photos at once
-  
-  upload(req, res, async (err) => {
-    if (err) {
-      console.error('Upload error:', err);
-      return res.status(500).json({ error: 'File upload error', details: err.message });
-    }
-    
-    try {
-      const { eventDate, tags, title } = req.body;
+
       const files = req.files || [];
-      
       if (files.length === 0) {
         return res.status(400).json({ error: 'No files uploaded' });
       }
-      
+
+      // Save photos and photographer details to the database
       const photoDb = createPhotoDbConnection();
-      const telegramData = telegramDataObj;
-      const photographerName = `${telegramData.first_name} ${telegramData.last_name || ''}`;
-      
-      // Find or create photographer based on Telegram ID
+      const photographerName = `${telegramData.first_name} ${telegramData.last_name || ''}`.trim();
+
+      // Find or create photographer
       let photographerId;
       const [photographers] = await photoDb.promise().query(
         'SELECT id FROM photographers WHERE telegram_id = ?',
         [telegramData.id]
       );
-      
+
       if (photographers.length === 0) {
-        // Create new photographer
         const [result] = await photoDb.promise().query(
           'INSERT INTO photographers (name, telegram_id, username) VALUES (?, ?, ?)',
           [photographerName, telegramData.id, telegramData.username || '']
@@ -790,41 +776,25 @@ app.post('/api/gallery/upload', (req, res) => {
         photographerId = result.insertId;
       } else {
         photographerId = photographers[0].id;
-        
-        // Update photographer name if needed
-        await photoDb.promise().query(
-          'UPDATE photographers SET name = ?, username = ? WHERE id = ?',
-          [photographerName, telegramData.username || '', photographerId]
-        );
       }
-      
-      // Process each file
+
+      // Process each uploaded file
       for (const file of files) {
-        // Create thumbnail path
+        const fullDir = path.join(uploadDir, eventDate, telegramData.id.toString(), 'full');
         const thumbDir = path.join(uploadDir, eventDate, telegramData.id.toString(), 'thumbnails');
         const thumbPath = path.join(thumbDir, file.filename);
-        
-        // Get dimensions with sharp
-        const metadata = await sharp(file.path).metadata();
-        
+
         // Generate thumbnail
+        fs.mkdirSync(thumbDir, { recursive: true });
         await sharp(file.path)
           .resize(400, null, { fit: 'inside' })
           .jpeg({ quality: 80 })
           .toFile(thumbPath);
-        
-        // Save to database
-        await photoDb.promise().execute(
-          `INSERT INTO photos (
-            filename, 
-            event_date, 
-            photographer_id, 
-            file_size, 
-            width, 
-            height, 
-            title,
-            tags
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+
+        // Save photo details to the database
+        const metadata = await sharp(file.path).metadata();
+        await photoDb.promise().query(
+          'INSERT INTO photos (filename, event_date, photographer_id, file_size, width, height, title, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
           [
             file.filename,
             eventDate,
@@ -833,24 +803,18 @@ app.post('/api/gallery/upload', (req, res) => {
             metadata.width,
             metadata.height,
             title || null,
-            tags || null
+            tags || null,
           ]
         );
       }
-      
+
       photoDb.end();
-      
-      res.status(200).json({ 
-        success: true, 
-        message: `${files.length} files uploaded successfully`,
-        files: files.map(f => f.filename)
-      });
-      
-    } catch (error) {
-      console.error('Error during upload processing:', error);
-      res.status(500).json({ error: 'Upload processing error', details: error.message });
-    }
-  });
+      res.status(200).json({ success: true, message: `${files.length} files uploaded successfully` });
+    });
+  } catch (error) {
+    console.error('Error in /api/gallery/upload:', error);
+    res.status(500).json({ error: 'Server error', details: error.message });
+  }
 });
 
 // Add this function for authenticating photographers or admins
