@@ -259,7 +259,7 @@ app.get('/api/telegram-auth', (req, res) => {
       // Redirect to the photo upload page with data in URL fragment
       // Using fragment instead of query to avoid exposing auth data in server logs
       const userDataParam = encodeURIComponent(JSON.stringify(telegramData));
-      return res.redirect(`https://test.suitwalk-linz.at/#/galerie/fotoupload?telegramAuth=${userDataParam}`);
+      return res.redirect(`https://test.suitwalk-linz.at/#/galerie/upload?telegramAuth=${userDataParam}`);
     }
     
     if (!telegramData || !telegramData.id) {
