@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp'); // Add this to your package.json dependencies
 const cors = require('cors');
+const router = require('./router')
 require('dotenv').config();
 
 const app = express();
