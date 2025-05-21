@@ -7,7 +7,8 @@ const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp'); // Add this to your package.json dependencies
 const cors = require('cors');
-const router = require('./router')
+const router = require('./router');
+app.use('/api/router', router); // Change the mount path to avoid conflicts
 require('dotenv').config();
 
 const app = express();
@@ -69,9 +70,7 @@ function createPhotoDbConnection() {
 }
 
 // Then include your router and other middleware
-const router = require('./router');
 console.log('Router module loaded');
-app.use('/api/router', router); // Change the mount path to avoid conflicts
 app.use((req, res, next) => {
     console.log(`Request received: ${req.method} ${req.url}`);
     next();
