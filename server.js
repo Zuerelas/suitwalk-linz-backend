@@ -107,9 +107,9 @@ const corsOptions = {
       callback(null, true);
     } else {
       console.log(`CORS blocked origin: ${origin}`);
-      // During development, allow all origins by uncommenting the next line
-      // callback(null, true); // Allow all origins during development
-      callback(new Error('Not allowed by CORS'));
+      // TEMPORARILY allow all origins to debug the issue
+      callback(null, true); // Allow all origins during development
+      // callback(new Error('Not allowed by CORS')); // Uncomment this in production
     }
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -1306,6 +1306,12 @@ app.get('/api/test-endpoint', (req, res) => {
 // Add this endpoint to get event dates for dropdown
 app.get('/api/gallery/dates-events', (req, res) => {
   console.log('Event dates endpoint called');
+  console.log('Request origin:', req.headers.origin);
+
+  // EXPLICITLY SET CORS HEADERS FOR THIS ENDPOINT
+  res.header('Access-Control-Allow-Origin', '*'); // Allow all origins for now
+  res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
 
   const photoDb = createPhotoDbConnection();
 
@@ -1332,6 +1338,9 @@ app.get('/api/gallery/dates-events', (req, res) => {
     }
 
     photoDb.end();
+    
+    // Add debugging headers to see in browser console
+    res.header('X-Debug', 'dates-endpoint-response');
     res.json({ dates });
   });
 });
