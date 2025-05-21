@@ -79,17 +79,43 @@ app.use((req, res, next) => {
 // CORS Configuration
 const corsOptions = {
   origin: function (origin, callback) {
-    const allowedOrigins = ['https://test.suitwalk-linz.at', 'https://suitwalk-linz.at'];
-    // During development, !origin is true for same-origin requests
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+    // For local development, allow requests with no origin (like curl or Postman)
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    const allowedOrigins = [
+      'https://test.suitwalk-linz.at', 
+      'https://suitwalk-linz.at',
+      /^http:\/\/localhost(:\d+)?$/  // Allow all localhost origins with any port
+    ];
+    
+    // Check if origin matches any of the allowed origins
+    // For regex patterns, we need to test them individually
+    let isAllowed = false;
+    for (const allowedOrigin of allowedOrigins) {
+      if (typeof allowedOrigin === 'string' && allowedOrigin === origin) {
+        isAllowed = true;
+        break;
+      } else if (allowedOrigin instanceof RegExp && allowedOrigin.test(origin)) {
+        isAllowed = true;
+        break;
+      }
+    }
+
+    if (isAllowed) {
       callback(null, true);
     } else {
+      console.log(`CORS blocked origin: ${origin}`);
+      // During development, allow all origins by uncommenting the next line
+      // callback(null, true); // Allow all origins during development
       callback(new Error('Not allowed by CORS'));
     }
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'],
-  credentials: true
+  credentials: true,
+  maxAge: 86400 // Cache preflight requests for 24 hours
 };
 
 // Apply CORS middleware to all routes
@@ -1280,21 +1306,6 @@ app.get('/api/test-endpoint', (req, res) => {
 // Add this endpoint to get event dates for dropdown
 app.get('/api/gallery/dates-events', (req, res) => {
   console.log('Event dates endpoint called');
-
-  // Set CORS headers explicitly for this endpoint
-  const allowedOrigins = ['https://test.suitwalk-linz.at', 'https://suitwalk-linz.at'];
-  const origin = req.headers.origin;
-
-  if (allowedOrigins.includes(origin)) {
-    res.header("Access-Control-Allow-Origin", origin);
-  } else {
-    // During development, you might want to allow all origins
-    // Comment this out in production!
-    res.header("Access-Control-Allow-Origin", "*");
-  }
-
-  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
-  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
 
   const photoDb = createPhotoDbConnection();
 
