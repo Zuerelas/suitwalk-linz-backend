@@ -6,6 +6,7 @@ const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp'); // Add this to your package.json dependencies
+const cors = require('cors');
 require('dotenv').config();
 
 const app = express();
@@ -75,19 +76,24 @@ app.use((req, res, next) => {
     next();
 });
 
-// CORS Configuration - Allow specific domains
-app.use((req, res, next) => {
-  const allowedOrigins = ['https://test.suitwalk-linz.at', 'https://suitwalk-linz.at'];
-  const origin = req.headers.origin;
+// CORS Configuration
+const corsOptions = {
+  origin: function (origin, callback) {
+    const allowedOrigins = ['https://test.suitwalk-linz.at', 'https://suitwalk-linz.at'];
+    // During development, !origin is true for same-origin requests
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'],
+  credentials: true
+};
 
-  if (allowedOrigins.includes(origin)) {
-    res.header("Access-Control-Allow-Origin", origin);
-  }
-
-  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
-  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE");
-  next();
-});
+// Apply CORS middleware to all routes
+app.use(cors(corsOptions));
 
 // Validate required environment variables - more lenient for Vercel
 const requiredEnvVars = ['TELEGRAM_BOT_TOKEN'];
@@ -223,25 +229,6 @@ app.get('/debug', (req, res) => {
         },
         timestamp: new Date().toISOString()
     });
-});
-
-// CORS pre-flight handling
-// CORS pre-flight handling
-app.options('*', (req, res) => {
-  const allowedOrigins = ['https://test.suitwalk-linz.at', 'https://suitwalk-linz.at'];
-  const origin = req.headers.origin;
-
-  if (allowedOrigins.includes(origin)) {
-    res.header("Access-Control-Allow-Origin", origin);
-  } else {
-    // During development, you might want to allow all origins
-    // Comment this out in production!
-    res.header("Access-Control-Allow-Origin", "*");
-  }
-
-  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
-  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE");
-  res.sendStatus(200);
 });
 
 // Root endpoint
