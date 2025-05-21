@@ -709,8 +709,28 @@ app.post('/api/gallery/upload', async (req, res) => {
   console.log('==== PHOTO UPLOAD REQUEST RECEIVED ====');
   
   try {
+    // First, check if we have a custom path in environment variables
+    let uploadDir;
+
+    if (process.env.PHOTO_UPLOAD_DIR) {
+      // Use custom directory from environment variable
+      uploadDir = process.env.PHOTO_UPLOAD_DIR;
+      console.log(`Using custom upload directory: ${uploadDir}`);
+    } else {
+      // Use home directory as fallback
+      // USERPROFILE is for Windows, HOME is for Linux/macOS
+      const homeDir = process.env.USERPROFILE || process.env.HOME;
+      uploadDir = path.join(homeDir, 'suitwalk-gallery');
+      console.log(`Using home directory for uploads: ${uploadDir}`);
+    }
+
+    // Make sure the directory exists
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+      console.log(`Created upload directory: ${uploadDir}`);
+    }
+
     // Set up multer for file uploads
-    const uploadDir = path.join(__dirname, 'public', 'gallery');
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
@@ -1144,15 +1164,27 @@ app.get('/api/gallery/download/:id', async (req, res) => {
     
     const photo = rows[0];
     const eventDate = photo.event_date.toISOString().split('T')[0];
-    const filePath = path.join(
-      __dirname,
-      'public',
-      'gallery', 
-      eventDate,
-      photo.photographer_id.toString(),
-      'full',
-      photo.filename
-    );
+    let filePath;
+
+    if (process.env.PHOTO_UPLOAD_DIR) {
+      filePath = path.join(
+        process.env.PHOTO_UPLOAD_DIR,
+        eventDate,
+        photo.photographer_id.toString(),
+        'full',
+        photo.filename
+      );
+    } else {
+      const homeDir = process.env.USERPROFILE || process.env.HOME;
+      filePath = path.join(
+        homeDir,
+        'suitwalk-gallery',
+        eventDate,
+        photo.photographer_id.toString(),
+        'full',
+        photo.filename
+      );
+    }
     
     if (!fs.existsSync(filePath)) {
       photoDb.end();
