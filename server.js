@@ -84,8 +84,8 @@ app.use((req, res, next) => {
     res.header("Access-Control-Allow-Origin", origin);
   }
 
-  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
-  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE");
   next();
 });
 
@@ -226,11 +226,22 @@ app.get('/debug', (req, res) => {
 });
 
 // CORS pre-flight handling
+// CORS pre-flight handling
 app.options('*', (req, res) => {
+  const allowedOrigins = ['https://test.suitwalk-linz.at', 'https://suitwalk-linz.at'];
+  const origin = req.headers.origin;
+
+  if (allowedOrigins.includes(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
+  } else {
+    // During development, you might want to allow all origins
+    // Comment this out in production!
     res.header("Access-Control-Allow-Origin", "*");
-    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
-    res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.sendStatus(200);
+  }
+
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE");
+  res.sendStatus(200);
 });
 
 // Root endpoint
@@ -1282,6 +1293,21 @@ app.get('/api/test-endpoint', (req, res) => {
 // Add this endpoint to get event dates for dropdown
 app.get('/api/gallery/dates-events', (req, res) => {
   console.log('Event dates endpoint called');
+
+  // Set CORS headers explicitly for this endpoint
+  const allowedOrigins = ['https://test.suitwalk-linz.at', 'https://suitwalk-linz.at'];
+  const origin = req.headers.origin;
+
+  if (allowedOrigins.includes(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
+  } else {
+    // During development, you might want to allow all origins
+    // Comment this out in production!
+    res.header("Access-Control-Allow-Origin", "*");
+  }
+
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
 
   const photoDb = createPhotoDbConnection();
 
