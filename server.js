@@ -9,10 +9,10 @@ const sharp = require('sharp'); // Add this to your package.json dependencies
 const cors = require('cors');
 const ftp = require('basic-ftp');
 require('dotenv').config(); 
-
+//
 const app = express();
 app.use(bodyParser.json());
-const router = require('./router');
+const router = express.Router();
 app.use('/api/router', router); // Change the mount path to avoid conflicts
 
 // Add these helper functions after imports
