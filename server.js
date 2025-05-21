@@ -704,132 +704,346 @@ app.get('/api/gallery/event/:date', (req, res) => {
   });
 });
 
-// Add upload endpoint for authenticated photographers
+// Replace all existing /api/gallery/upload endpoints with this single, well-structured implementation
 app.post('/api/gallery/upload', async (req, res) => {
+  console.log('==== PHOTO UPLOAD REQUEST RECEIVED ====');
+  
   try {
-    // Validate photographer key
-    const photographerKey = req.body.photographerKey;
-    if (!photographerKey || photographerKey !== process.env.PHOTOGRAPHER_API_KEY) {
-      return res.status(401).json({ error: 'Invalid photographer key' });
-    }
-
-    // Parse Telegram data
-    let telegramData;
-    try {
-      telegramData = typeof req.body.telegramData === 'string' 
-        ? JSON.parse(req.body.telegramData) 
-        : req.body.telegramData;
-    } catch (err) {
-      return res.status(400).json({ error: 'Invalid Telegram data format' });
-    }
-    
-    // Check the telegramData has required fields
-    if (!telegramData || !telegramData.id) {
-      return res.status(401).json({ error: 'Missing Telegram authentication data' });
-    }
-    
-    // Always set the type to photo_upload for consistent validation
-    telegramData.type = 'photo_upload';
-
-    // Validate event date
-    const { eventDate, tags, title } = req.body;
-    if (!eventDate) {
-      return res.status(400).json({ error: 'Event date is required' });
-    }
-
-    // Handle file uploads
+    // Set up multer for file uploads
     const uploadDir = path.join(__dirname, 'public', 'gallery');
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
 
+    // Create multer storage configuration
+    const storage = multer.diskStorage({
+      destination: (req, file, cb) => {
+        // We'll set the actual destination folder after parsing the form data
+        const tempDir = path.join(uploadDir, 'temp');
+        fs.mkdirSync(tempDir, { recursive: true });
+        cb(null, tempDir);
+      },
+      filename: (req, file, cb) => {
+        const timestamp = Date.now();
+        const safeFilename = file.originalname.replace(/[^a-zA-Z0-9.]/g, '_');
+        cb(null, `${timestamp}-${safeFilename}`);
+      }
+    });
+
+    // Set up multer upload
     const upload = multer({
-      storage: multer.diskStorage({
-        destination: (req, file, cb) => {
-          const fullDir = path.join(uploadDir, eventDate, telegramData.id.toString(), 'full');
-          fs.mkdirSync(fullDir, { recursive: true });
-          cb(null, fullDir);
-        },
-        filename: (req, file, cb) => {
-          const timestamp = Date.now();
-          const safeFilename = file.originalname.replace(/[^a-zA-Z0-9.]/g, '_');
-          cb(null, `${timestamp}-${safeFilename}`);
-        },
-      }),
-      limits: { fileSize: 15 * 1024 * 1024 }, // 15MB limit
-    }).array('photos', 50); // Accept up to 50 photos
+      storage: storage,
+      limits: { fileSize: 15 * 1024 * 1024 } // 15MB limit
+    }).array('photos', 50);
 
-    upload(req, res, async (err) => {
-      if (err) {
-        console.error('Upload error:', err);
-        return res.status(500).json({ error: 'File upload error', details: err.message });
+    // Use promise to handle the multer upload
+    const processUpload = () => {
+      return new Promise((resolve, reject) => {
+        upload(req, res, (err) => {
+          if (err) {
+            console.error('Upload error:', err);
+            reject(err);
+          } else {
+            resolve(req.files || []);
+          }
+        });
+      });
+    };
+
+    // Process the upload
+    const files = await processUpload();
+    console.log(`Uploaded ${files.length} files successfully`);
+
+    if (files.length === 0) {
+      return res.status(400).json({ error: 'No files uploaded' });
+    }
+
+    // Validate photographer key first
+    const photographerKey = req.body.photographerKey;
+    if (!photographerKey || photographerKey !== process.env.PHOTOGRAPHER_API_KEY) {
+      // Delete temporary files on validation error
+      files.forEach(file => fs.unlinkSync(file.path));
+      return res.status(401).json({ error: 'Invalid photographer key' });
+    }
+
+    // Parse telegram data (could be JSON string or direct fields)
+    let telegramData = null;
+    
+    try {
+      if (req.body.telegramData) {
+        telegramData = typeof req.body.telegramData === 'string' 
+          ? JSON.parse(req.body.telegramData) 
+          : req.body.telegramData;
       }
+    } catch (e) {
+      console.error('Error parsing telegramData:', e);
+      return res.status(400).json({ error: 'Invalid telegram data format' });
+    }
 
-      const files = req.files || [];
-      if (files.length === 0) {
-        return res.status(400).json({ error: 'No files uploaded' });
-      }
+    if (!telegramData || !telegramData.id) {
+      // Delete temporary files on validation error
+      files.forEach(file => fs.unlinkSync(file.path));
+      return res.status(401).json({ error: 'Missing Telegram authentication data' });
+    }
 
-      // Save photos and photographer details to the database
-      const photoDb = createPhotoDbConnection();
-      const photographerName = `${telegramData.first_name} ${telegramData.last_name || ''}`.trim();
+    // Get other form fields
+    const eventDate = req.body.eventDate;
+    const tags = req.body.tags || '';
+    const title = req.body.title || '';
 
+    if (!eventDate) {
+      // Delete temporary files on validation error
+      files.forEach(file => fs.unlinkSync(file.path));
+      return res.status(400).json({ error: 'Event date is required' });
+    }
+
+    // Connect to the database
+    const photoDb = createPhotoDbConnection();
+    
+    try {
       // Find or create photographer
-      let photographerId;
+      const photographerName = `${telegramData.first_name || ''} ${telegramData.last_name || ''}`.trim();
+      
       const [photographers] = await photoDb.promise().query(
         'SELECT id FROM photographers WHERE telegram_id = ?',
         [telegramData.id]
       );
-
+      
+      let photographerId;
+      
       if (photographers.length === 0) {
         const [result] = await photoDb.promise().query(
           'INSERT INTO photographers (name, telegram_id, username) VALUES (?, ?, ?)',
           [photographerName, telegramData.id, telegramData.username || '']
         );
         photographerId = result.insertId;
+        console.log(`Created new photographer with ID ${photographerId}`);
       } else {
         photographerId = photographers[0].id;
+        console.log(`Using existing photographer with ID ${photographerId}`);
       }
 
-      // Process each uploaded file
+      // Create the final directories for this photographer
+      const photographerDir = path.join(uploadDir, eventDate, telegramData.id.toString());
+      const fullDir = path.join(photographerDir, 'full');
+      const thumbDir = path.join(photographerDir, 'thumbnails');
+      
+      fs.mkdirSync(fullDir, { recursive: true });
+      fs.mkdirSync(thumbDir, { recursive: true });
+
+      // Process each file: move from temp to final location and create thumbnail
       for (const file of files) {
-        const fullDir = path.join(uploadDir, eventDate, telegramData.id.toString(), 'full');
-        const thumbDir = path.join(uploadDir, eventDate, telegramData.id.toString(), 'thumbnails');
-        const thumbPath = path.join(thumbDir, file.filename);
-
+        // Define the final paths
+        const finalFilePath = path.join(fullDir, file.filename);
+        const thumbFilePath = path.join(thumbDir, file.filename);
+        
+        // Move file from temp to final location
+        fs.renameSync(file.path, finalFilePath);
+        
         // Generate thumbnail
-        fs.mkdirSync(thumbDir, { recursive: true });
-        await sharp(file.path)
-          .resize(400, null, { fit: 'inside' })
-          .jpeg({ quality: 80 })
-          .toFile(thumbPath);
-
-        // Save photo details to the database
-        const metadata = await sharp(file.path).metadata();
-        await photoDb.promise().query(
-          'INSERT INTO photos (filename, event_date, photographer_id, file_size, width, height, title, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-          [
-            file.filename,
-            eventDate,
-            photographerId,
-            file.size,
-            metadata.width,
-            metadata.height,
-            title || null,
-            tags || null,
-          ]
-        );
+        try {
+          await sharp(finalFilePath)
+            .resize(400, null, { fit: 'inside' })
+            .jpeg({ quality: 80 })
+            .toFile(thumbFilePath);
+          
+          // Get image metadata
+          const metadata = await sharp(finalFilePath).metadata();
+          
+          // Save to database
+          await photoDb.promise().query(
+            `INSERT INTO photos 
+            (filename, event_date, photographer_id, file_size, width, height, title, tags) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              file.filename,
+              eventDate,
+              photographerId,
+              file.size,
+              metadata.width,
+              metadata.height,
+              title,
+              tags
+            ]
+          );
+        } catch (error) {
+          console.error(`Error processing file ${file.filename}:`, error);
+          // Continue with other files even if one fails
+        }
       }
+
+      // Update the last_upload timestamp for the photographer
+      await photoDb.promise().query(
+        'UPDATE photographers SET last_upload = NOW() WHERE id = ?',
+        [photographerId]
+      );
 
       photoDb.end();
-      res.status(200).json({ success: true, message: `${files.length} files uploaded successfully` });
-    });
+      
+      res.status(200).json({ 
+        success: true, 
+        message: `${files.length} files uploaded successfully` 
+      });
+      
+    } catch (error) {
+      photoDb.end();
+      throw error; // Re-throw to be caught by outer try-catch
+    }
+    
   } catch (error) {
     console.error('Error in /api/gallery/upload:', error);
-    res.status(500).json({ error: 'Server error', details: error.message });
+    res.status(500).json({ 
+      error: 'Server error', 
+      details: error.message
+    });
   }
 });
 
+// Add a secure endpoint to get registration data
+app.get('/api/registrations', (req, res) => {
+    // Basic API key authentication
+    const apiKey = req.headers['x-api-key'];
+    if (!apiKey || apiKey !== process.env.ADMIN_API_KEY) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    if (!db) {
+        return res.status(500).json({ error: 'Database connection not available' });
+    }
+
+    // Query to get all users with counts
+    const query = `
+        SELECT 
+            type,
+            COUNT(*) as count,
+            SUM(CASE WHEN badge = 1 THEN 1 ELSE 0 END) as badge_count
+        FROM users
+        GROUP BY type
+        ORDER BY count DESC;
+    `;
+
+    // Query to get detailed user data
+    const detailedQuery = `
+        SELECT 
+            telegram_id, 
+            first_name, 
+            last_name, 
+            username, 
+            photo_url, 
+            auth_date, 
+            type, 
+            badge,
+            created_at
+        FROM users
+        ORDER BY created_at DESC;
+    `;
+
+    // Execute both queries
+    db.query(query, (err, summaryResults) => {
+        if (err) {
+            console.error('Database query error:', err);
+            return res.status(500).json({ error: 'Database error' });
+        }
+
+        db.query(detailedQuery, (detailErr, detailResults) => {
+            if (detailErr) {
+                console.error('Database query error:', detailErr);
+                return res.status(500).json({ error: 'Database error' });
+            }
+
+            // Calculate totals
+            const totalUsers = detailResults.length;
+            const totalBadges = detailResults.reduce((sum, user) => sum + (user.badge ? 1 : 0), 0);
+
+            res.json({
+                summary: summaryResults,
+                details: detailResults,
+                totals: {
+                    users: totalUsers,
+                    badges: totalBadges
+                }
+            });
+        });
+    });
+});
+
+// Public statistics endpoint - no authentication required
+app.get('/api/public-stats', (req, res) => {
+    console.log('Received request for public stats');
+    
+    if (!db) {
+        console.error('Database connection not available for public stats');
+        return res.status(500).json({ error: 'Database connection not available' });
+    }
+
+    // Query to get counts by type
+    const query = `
+        SELECT 
+            type,
+            COUNT(*) as count,
+            SUM(CASE WHEN badge = 1 THEN 1 ELSE 0 END) as badge_count
+        FROM users
+        GROUP BY type
+        ORDER BY count DESC;
+    `;
+
+    // Execute query
+    db.query(query, (err, summaryResults) => {
+        if (err) {
+            console.error('Database query error in public-stats:', err);
+            return res.status(500).json({ error: 'Database error' });
+        }
+
+        // Get total counts without detailed user info
+        const totalQuery = `
+            SELECT 
+                COUNT(*) as total_users,
+                SUM(CASE WHEN badge = 1 THEN 1 ELSE 0 END) as total_badges
+            FROM users;
+        `;
+
+        db.query(totalQuery, (totalErr, totalResults) => {
+            if (totalErr) {
+                console.error('Database query error in public-stats totals:', totalErr);
+                return res.status(500).json({ error: 'Database error' });
+            }
+
+            // Query for attendee list (names only, no personal data)
+            const attendeeQuery = `
+                SELECT 
+                    first_name,
+                    type,
+                    badge
+                FROM users
+                ORDER BY created_at DESC;
+            `;
+
+            db.query(attendeeQuery, (attendeeErr, attendeeResults) => {
+                if (attendeeErr) {
+                    console.error('Database query error in public-stats attendees:', attendeeErr);
+                    return res.status(500).json({ error: 'Database error' });
+                }
+
+                // Set explicit headers to ensure proper JSON and CORS
+                res.header("Access-Control-Allow-Origin", "*");
+                res.header("Access-Control-Allow-Headers", "Content-Type, Accept");
+                res.setHeader('Content-Type', 'application/json');
+                
+                // Return the data
+                res.json({
+                    summary: summaryResults || [],
+                    totals: {
+                        users: totalResults[0]?.total_users || 0,
+                        badges: totalResults[0]?.total_badges || 0
+                    },
+                    attendees: attendeeResults || []
+                });
+                
+                console.log('Public stats sent successfully');
+            });
+        });
+    });
+});
 // Add this function for authenticating photographers or admins
 function authenticateUser(req, res, next) {
   // Get token from Authorization header
@@ -904,118 +1118,6 @@ app.post('/api/gallery/photographers', authenticateUser, (req, res) => {
     
     res.status(201).json({ id: result.insertId, name });
     photoDb.end();
-  });
-});
-
-
-// Implement complete file upload with thumbnail generation
-app.post('/api/gallery/upload', authenticateUser, (req, res) => {
-  const uploadDir = path.join(__dirname, 'public', 'gallery');
-  
-  // Create base uploads directory if it doesn't exist
-  if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-  }
-  
-  const upload = multer({
-    storage: multer.diskStorage({
-      destination: (req, file, cb) => {
-        const { eventDate, photographerId } = req.body;
-        
-        // Create both full and thumbnail directories
-        const fullDir = path.join(uploadDir, eventDate, photographerId.toString(), 'full');
-        const thumbDir = path.join(uploadDir, eventDate, photographerId.toString(), 'thumbnails');
-        
-        // Create directories if they don't exist
-        fs.mkdirSync(fullDir, { recursive: true });
-        fs.mkdirSync(thumbDir, { recursive: true });
-        
-        cb(null, fullDir); // Store originals in full dir
-      },
-      filename: (req, file, cb) => {
-        // Generate safer filenames
-        const timestamp = Date.now();
-        const originalName = file.originalname.replace(/[^a-zA-Z0-9.]/g, '_');
-        cb(null, `${timestamp}-${originalName}`);
-      }
-    }),
-    limits: {
-      fileSize: 15 * 1024 * 1024 // 15MB limit
-    }
-  }).array('photos', 50); // Accept up to 50 photos at once
-  
-  upload(req, res, async (err) => {
-    if (err) {
-      console.error('Upload error:', err);
-      return res.status(500).json({ error: 'File upload error', details: err.message });
-    }
-    
-    try {
-      const { eventDate, tags, title } = req.body;
-      const files = req.files || [];
-      
-      if (files.length === 0) {
-        return res.status(400).json({ error: 'No files uploaded' });
-      }
-      
-      const photoDb = createPhotoDbConnection();
-      
-      // Process each file
-      for (const file of files) {
-        // Create thumbnail path
-        const thumbDir = path.join(uploadDir, eventDate, photographerId.toString(), 'thumbnails');
-        const thumbPath = path.join(thumbDir, file.filename);
-        
-        // Get dimensions with sharp
-        const metadata = await sharp(file.path).metadata();
-        
-        // Generate thumbnail
-        await sharp(file.path)
-          .resize(400, null, { fit: 'inside' })
-          .jpeg({ quality: 80 })
-          .toFile(thumbPath);
-        
-        // Save to database
-        const query = `
-          INSERT INTO photos (
-            filename, 
-            event_date, 
-            photographer_id, 
-            file_size, 
-            width, 
-            height, 
-            title,
-            tags
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `;
-        
-        await photoDb.promise().execute(
-          query,
-          [
-            file.filename,
-            eventDate,
-            photographerId,
-            file.size,
-            metadata.width,
-            metadata.height,
-            title || null,
-            tags || null
-          ]
-        );
-      }
-      
-      photoDb.end();
-      
-      res.status(200).json({ 
-        success: true, 
-        message: `${files.length} files uploaded successfully`,
-        files: files.map(f => f.filename)
-      });
-      
-    } catch (error) {
-      console.error('Error during upload processing:', error);
-      res.status(500).json({ error: 'Upload processing error', details: error.message });
-    }
   });
 });
 
@@ -1567,200 +1669,6 @@ app.use('/api/gallery/upload', (req, res, next) => {
     }
   }
   next();
-});
-
-// Replace the photo upload endpoint with this improved version
-app.post('/api/gallery/upload', (req, res) => {
-  // Configure multer first to parse the form data
-  const uploadDir = path.join(__dirname, 'public', 'gallery');
-  if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-  }
-  
-  // Create multer instance for initial form parsing
-  const upload = multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: 15 * 1024 * 1024 }
-  }).array('photos', 50); 
-  
-  // Use multer to parse the form data
-  upload(req, res, async (err) => {
-    if (err) {
-      console.error('Upload parsing error:', err);
-      return res.status(500).json({ error: 'File upload error', details: err.message });
-    }
-    
-    console.log('Files received:', req.files ? req.files.length : 0);
-    
-    try {
-      // Now verify photographer key
-      const photographerKey = req.body.photographerKey;
-      if (!photographerKey || photographerKey !== process.env.PHOTOGRAPHER_API_KEY) {
-        console.error('Invalid photographer key');
-        return res.status(401).json({ error: 'Invalid photographer key' });
-      }
-      
-      // Process Telegram data - handle both formats:
-      // 1. As a stringified JSON object in telegramData field
-      // 2. As individual fields (id, first_name, etc.)
-      let telegramData = {};
-      
-      if (req.body.telegramData) {
-        // If telegramData is provided as a string, parse it
-        try {
-          telegramData = typeof req.body.telegramData === 'string' 
-            ? JSON.parse(req.body.telegramData) 
-            : req.body.telegramData;
-        } catch (e) {
-          console.error('Error parsing telegramData:', e);
-        }
-      } else {
-        // Check if Telegram fields are provided directly
-        const telegramFields = ['id', 'first_name', 'last_name', 'username', 'photo_url', 'auth_date', 'hash'];
-        const hasSomeFields = telegramFields.some(field => req.body[field]);
-        
-        if (hasSomeFields) {
-          telegramFields.forEach(field => {
-            if (req.body[field]) telegramData[field] = req.body[field];
-          });
-        } else {
-          // Check for array-style notation
-          for (const key in req.body) {
-            if (key.startsWith('telegramData[')) {
-              const cleanKey = key.replace('telegramData[', '').replace(']', '');
-              telegramData[cleanKey] = req.body[key];
-            }
-          }
-        }
-      }
-      
-      console.log('Parsed Telegram data:', { 
-        ...telegramData, 
-        hash: telegramData.hash ? telegramData.hash.substring(0, 8) + '...' : 'missing' 
-      });
-      
-      if (!telegramData.id) {
-        console.error('Missing Telegram ID');
-        return res.status(401).json({ error: 'Missing Telegram authentication data' });
-      }
-      
-      // Now we have the files and authentication data, proceed with upload
-      const { eventDate, tags, title } = req.body;
-      const files = req.files || [];
-      
-      if (files.length === 0) {
-        return res.status(400).json({ error: 'No files uploaded' });
-      }
-      
-      const photoDb = createPhotoDbConnection();
-      const photographerName = `${telegramData.first_name || ''} ${telegramData.last_name || ''}`.trim();
-      
-      // Find or create photographer based on Telegram ID
-      let photographerId;
-      const [photographers] = await photoDb.promise().query(
-        'SELECT id FROM photographers WHERE telegram_id = ?',
-        [telegramData.id]
-      );
-      
-      if (photographers.length === 0) {
-        // Create new photographer
-        const [result] = await photoDb.promise().query(
-          'INSERT INTO photographers (name, telegram_id, username) VALUES (?, ?, ?)',
-          [photographerName, telegramData.id, telegramData.username || '']
-        );
-        photographerId = result.insertId;
-        console.log('Created new photographer:', photographerId);
-      } else {
-        photographerId = photographers[0].id;
-        
-        // Update photographer name if needed
-        await photoDb.promise().query(
-          'UPDATE photographers SET name = ?, username = ?, last_upload = NOW() WHERE id = ?',
-          [photographerName, telegramData.username || '', photographerId]
-        );
-        console.log('Updated existing photographer:', photographerId);
-      }
-      
-      // Now create directories for this upload
-      const photographerUploadDir = path.join(uploadDir, eventDate, telegramData.id.toString());
-      const fullDir = path.join(photographerUploadDir, 'full');
-      const thumbDir = path.join(photographerUploadDir, 'thumbnails');
-      
-      fs.mkdirSync(fullDir, { recursive: true });
-      fs.mkdirSync(thumbDir, { recursive: true });
-      
-      console.log('Created directories:', { fullDir, thumbDir });
-      
-      // Process each file
-      const processedFiles = [];
-      
-      for (const file of files) {
-        // Create unique filename
-        const timestamp = Date.now();
-        const safeFilename = file.originalname.replace(/[^a-zA-Z0-9.]/g, '_');
-        const filename = `${timestamp}-${safeFilename}`;
-        
-        // Save original file
-        const originalPath = path.join(fullDir, filename);
-        fs.writeFileSync(originalPath, file.buffer);
-        
-        // Generate thumbnail
-        const thumbnailPath = path.join(thumbDir, filename);
-        
-        // Get dimensions & create thumbnail with sharp
-        const metadata = await sharp(file.buffer).metadata();
-        await sharp(file.buffer)
-          .resize(400, null, { fit: 'inside' })
-          .jpeg({ quality: 80 })
-          .toFile(thumbnailPath);
-        
-        // Save to database
-        const [result] = await photoDb.promise().execute(
-          `INSERT INTO photos (
-            filename, 
-            event_date, 
-            photographer_id, 
-            file_size, 
-            width, 
-            height, 
-            title,
-            tags,
-            upload_date
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-          [
-            filename,
-            eventDate,
-            photographerId,
-            file.size,
-            metadata.width,
-            metadata.height,
-            title || null,
-            tags || null
-          ]
-        );
-        
-        processedFiles.push({
-          id: result.insertId,
-          filename: filename,
-          title: title || null
-        });
-        
-        console.log(`Processed file: ${filename}, database ID: ${result.insertId}`);
-      }
-      
-      photoDb.end();
-      
-      res.status(200).json({ 
-        success: true, 
-        message: `${files.length} files uploaded successfully`,
-        files: processedFiles
-      });
-      
-    } catch (error) {
-      console.error('Error during upload processing:', error);
-      res.status(500).json({ error: 'Upload processing error', details: error.message });
-    }
-  });
 });
 
 // Also fix your TelegramLoginWidget to store data properly
