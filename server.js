@@ -7,12 +7,13 @@ const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp'); // Add this to your package.json dependencies
 const cors = require('cors');
-const router = require('./router');
-app.use('/api/router', router); // Change the mount path to avoid conflicts
-require('dotenv').config();
+const ftp = require('basic-ftp');
+require('dotenv').config(); 
 
 const app = express();
 app.use(bodyParser.json());
+const router = require('./router');
+app.use('/api/router', router); // Change the mount path to avoid conflicts
 
 // Add these helper functions after imports
 function createSuitwalksDbConnection() {
@@ -66,6 +67,30 @@ function createPhotoDbConnection() {
   } catch (error) {
     console.error('Error creating photo database connection:', error);
     throw error;
+  }
+}
+
+async function uploadToFTP(localFilePath, remoteFilePath) {
+  const client = new ftp.Client();
+  client.ftp.verbose = true; // Enable verbose logging for debugging
+
+  try {
+    await client.access({
+      host: process.env.FTP_HOST,
+      port: process.env.FTP_PORT || 21,
+      user: process.env.FTP_USER,
+      password: process.env.FTP_PASSWORD,
+      secure: false, // Set to true if using FTPS
+    });
+
+    console.log(`Connected to FTP server: ${process.env.FTP_HOST}`);
+    await client.uploadFrom(localFilePath, remoteFilePath);
+    console.log(`File uploaded to FTP: ${remoteFilePath}`);
+  } catch (error) {
+    console.error('Error uploading to FTP:', error);
+    throw error;
+  } finally {
+    client.close();
   }
 }
 
@@ -731,56 +756,25 @@ app.get('/api/gallery/event/:date', (req, res) => {
 // Replace all existing /api/gallery/upload endpoints with this single, well-structured implementation
 app.post('/api/gallery/upload', async (req, res) => {
   console.log('==== PHOTO UPLOAD REQUEST RECEIVED ====');
-  
+
   try {
-    // First, check if we have a custom path in environment variables
-    let uploadDir;
-
-    if (process.env.PHOTO_UPLOAD_DIR) {
-      // Use custom directory from environment variable
-      uploadDir = process.env.PHOTO_UPLOAD_DIR;
-      console.log(`Using custom upload directory: ${uploadDir}`);
-    } else {
-      // Use home directory as fallback
-      // USERPROFILE is for Windows, HOME is for Linux/macOS
-      const homeDir = process.env.USERPROFILE || process.env.HOME;
-      uploadDir = path.join(homeDir, 'suitwalk-gallery');
-      console.log(`Using home directory for uploads: ${uploadDir}`);
-    }
-
-    // Make sure the directory exists
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-      console.log(`Created upload directory: ${uploadDir}`);
-    }
-
     // Set up multer for file uploads
+    const uploadDir = '/tmp/suitwalk-gallery'; // Use Vercel's temporary directory
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
 
-    // Create multer storage configuration
     const storage = multer.diskStorage({
-      destination: (req, file, cb) => {
-        // We'll set the actual destination folder after parsing the form data
-        const tempDir = path.join(uploadDir, 'temp');
-        fs.mkdirSync(tempDir, { recursive: true });
-        cb(null, tempDir);
-      },
+      destination: uploadDir,
       filename: (req, file, cb) => {
         const timestamp = Date.now();
         const safeFilename = file.originalname.replace(/[^a-zA-Z0-9.]/g, '_');
         cb(null, `${timestamp}-${safeFilename}`);
-      }
+      },
     });
 
-    // Set up multer upload
-    const upload = multer({
-      storage: storage,
-      limits: { fileSize: 15 * 1024 * 1024 } // 15MB limit
-    }).array('photos', 50);
+    const upload = multer({ storage }).array('photos', 50);
 
-    // Use promise to handle the multer upload
     const processUpload = () => {
       return new Promise((resolve, reject) => {
         upload(req, res, (err) => {
@@ -794,152 +788,31 @@ app.post('/api/gallery/upload', async (req, res) => {
       });
     };
 
-    // Process the upload
     const files = await processUpload();
-    console.log(`Uploaded ${files.length} files successfully`);
+    console.log(`Uploaded ${files.length} files to temporary directory`);
 
     if (files.length === 0) {
       return res.status(400).json({ error: 'No files uploaded' });
     }
 
-    // Validate photographer key first
+    // Validate photographer key
     const photographerKey = req.body.photographerKey;
     if (!photographerKey || photographerKey !== process.env.PHOTOGRAPHER_API_KEY) {
-      // Delete temporary files on validation error
-      files.forEach(file => fs.unlinkSync(file.path));
+      files.forEach(file => fs.unlinkSync(file.path)); // Delete temporary files
       return res.status(401).json({ error: 'Invalid photographer key' });
     }
 
-    // Parse telegram data (could be JSON string or direct fields)
-    let telegramData = null;
-    
-    try {
-      if (req.body.telegramData) {
-        telegramData = typeof req.body.telegramData === 'string' 
-          ? JSON.parse(req.body.telegramData) 
-          : req.body.telegramData;
-      }
-    } catch (e) {
-      console.error('Error parsing telegramData:', e);
-      return res.status(400).json({ error: 'Invalid telegram data format' });
+    // Upload files to the Plesk server via FTP
+    for (const file of files) {
+      const remoteFilePath = `${process.env.FTP_UPLOAD_DIR}/${file.filename}`;
+      await uploadToFTP(file.path, remoteFilePath);
+      fs.unlinkSync(file.path); // Delete the temporary file after successful upload
     }
 
-    if (!telegramData || !telegramData.id) {
-      // Delete temporary files on validation error
-      files.forEach(file => fs.unlinkSync(file.path));
-      return res.status(401).json({ error: 'Missing Telegram authentication data' });
-    }
-
-    // Get other form fields
-    const eventDate = req.body.eventDate;
-    const tags = req.body.tags || '';
-    const title = req.body.title || '';
-
-    if (!eventDate) {
-      // Delete temporary files on validation error
-      files.forEach(file => fs.unlinkSync(file.path));
-      return res.status(400).json({ error: 'Event date is required' });
-    }
-
-    // Connect to the database
-    const photoDb = createPhotoDbConnection();
-    
-    try {
-      // Find or create photographer
-      const photographerName = `${telegramData.first_name || ''} ${telegramData.last_name || ''}`.trim();
-      
-      const [photographers] = await photoDb.promise().query(
-        'SELECT id FROM photographers WHERE telegram_id = ?',
-        [telegramData.id]
-      );
-      
-      let photographerId;
-      
-      if (photographers.length === 0) {
-        const [result] = await photoDb.promise().query(
-          'INSERT INTO photographers (name, telegram_id, username) VALUES (?, ?, ?)',
-          [photographerName, telegramData.id, telegramData.username || '']
-        );
-        photographerId = result.insertId;
-        console.log(`Created new photographer with ID ${photographerId}`);
-      } else {
-        photographerId = photographers[0].id;
-        console.log(`Using existing photographer with ID ${photographerId}`);
-      }
-
-      // Create the final directories for this photographer
-      const photographerDir = path.join(uploadDir, eventDate, telegramData.id.toString());
-      const fullDir = path.join(photographerDir, 'full');
-      const thumbDir = path.join(photographerDir, 'thumbnails');
-      
-      fs.mkdirSync(fullDir, { recursive: true });
-      fs.mkdirSync(thumbDir, { recursive: true });
-
-      // Process each file: move from temp to final location and create thumbnail
-      for (const file of files) {
-        // Define the final paths
-        const finalFilePath = path.join(fullDir, file.filename);
-        const thumbFilePath = path.join(thumbDir, file.filename);
-        
-        // Move file from temp to final location
-        fs.renameSync(file.path, finalFilePath);
-        
-        // Generate thumbnail
-        try {
-          await sharp(finalFilePath)
-            .resize(400, null, { fit: 'inside' })
-            .jpeg({ quality: 80 })
-            .toFile(thumbFilePath);
-          
-          // Get image metadata
-          const metadata = await sharp(finalFilePath).metadata();
-          
-          // Save to database
-          await photoDb.promise().query(
-            `INSERT INTO photos 
-            (filename, event_date, photographer_id, file_size, width, height, title, tags) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              file.filename,
-              eventDate,
-              photographerId,
-              file.size,
-              metadata.width,
-              metadata.height,
-              title,
-              tags
-            ]
-          );
-        } catch (error) {
-          console.error(`Error processing file ${file.filename}:`, error);
-          // Continue with other files even if one fails
-        }
-      }
-
-      // Update the last_upload timestamp for the photographer
-      await photoDb.promise().query(
-        'UPDATE photographers SET last_upload = NOW() WHERE id = ?',
-        [photographerId]
-      );
-
-      photoDb.end();
-      
-      res.status(200).json({ 
-        success: true, 
-        message: `${files.length} files uploaded successfully` 
-      });
-      
-    } catch (error) {
-      photoDb.end();
-      throw error; // Re-throw to be caught by outer try-catch
-    }
-    
+    res.status(200).json({ success: true, message: `${files.length} files uploaded successfully` });
   } catch (error) {
     console.error('Error in /api/gallery/upload:', error);
-    res.status(500).json({ 
-      error: 'Server error', 
-      details: error.message
-    });
+    res.status(500).json({ error: 'Server error', details: error.message });
   }
 });
 

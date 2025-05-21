@@ -10,10 +10,6 @@ router.get('/health', (req, res) => {
   });
 });
 
-router.get('/example', (req, res) => {
-    res.json({ message: 'Example route working' });
-});
-
 // You can add additional routes here if needed
 // router.get('/another-route', (req, res) => { ... });
 
