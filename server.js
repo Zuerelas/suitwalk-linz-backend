@@ -22,7 +22,7 @@ function createSuitwalksDbConnection() {
       host: process.env.DB_HOST,
       user: process.env.DB_USER,
       password: process.env.DB_PASSWORD,
-      database: process.env.DB_NAME, // suitwalks
+      database: process.env.DB_NAME, // "suitwalks" database
       ssl: process.env.DB_SSL === 'true' ? true : undefined,
       connectTimeout: 10000, // 10 second timeout
       acquireTimeout: 10000
@@ -70,7 +70,8 @@ function createPhotoDbConnection() {
   }
 }
 
-async function uploadToFTP(localFilePath, remoteFilePath) {
+// Update the uploadToFTP function to handle directory structure and thumbnails
+async function uploadToFTP(localFilePath, eventDate, photographerId, photographerName) {
   const client = new ftp.Client();
   client.ftp.verbose = true; // Enable verbose logging for debugging
 
@@ -84,13 +85,81 @@ async function uploadToFTP(localFilePath, remoteFilePath) {
     });
 
     console.log(`Connected to FTP server: ${process.env.FTP_HOST}`);
-    await client.uploadFrom(localFilePath, remoteFilePath);
-    console.log(`File uploaded to FTP: ${remoteFilePath}`);
+
+    // Extract filename from path
+    const filename = path.basename(localFilePath);
+
+    // MODIFIED: Ensure we use test.suitwalk-linz.at instead of httpdocs
+    // Force the webRoot to be /test.suitwalk-linz.at regardless of environment variable
+    const webRoot = '/test.suitwalk-linz.at';
+    
+    // Create the directory structure matching what the frontend expects
+    // Format: /gallery/{eventDate}/{photographerId}/full/ and /gallery/{eventDate}/{photographerId}/thumbnails/
+    const baseDir = `${webRoot}/gallery/${eventDate}/${photographerId}`;
+    const fullDir = `${baseDir}/full`;
+    const thumbnailDir = `${baseDir}/thumbnails`;
+
+    // Ensure parent directories exist
+    try {
+      await client.ensureDir(`${webRoot}`);
+      await client.ensureDir(`${webRoot}/gallery`);
+      await client.ensureDir(`${webRoot}/gallery/${eventDate}`);
+      await client.ensureDir(baseDir);
+      await client.ensureDir(fullDir);
+      await client.ensureDir(thumbnailDir);
+    } catch (dirError) {
+      console.log('Creating directories:', dirError);
+      // Ignore errors - we'll try to create them
+      await client.mkdir(`${webRoot}/gallery`, true);
+      await client.mkdir(`${webRoot}/gallery/${eventDate}`, true);
+      await client.mkdir(baseDir, true);
+      await client.mkdir(fullDir, true);
+      await client.mkdir(thumbnailDir, true);
+    }
+
+    // Upload the original file to the "full" directory
+    const fullRemotePath = `${fullDir}/${filename}`;
+    await client.uploadFrom(localFilePath, fullRemotePath);
+    console.log(`Uploaded original file to FTP: ${fullRemotePath}`);
+
+    // Create and upload thumbnail
+    const thumbnailPath = `/tmp/thumbnail-${filename}`;
+    await createThumbnail(localFilePath, thumbnailPath);
+    
+    // Upload thumbnail to thumbnails directory
+    const thumbnailRemotePath = `${thumbnailDir}/${filename}`;
+    await client.uploadFrom(thumbnailPath, thumbnailRemotePath);
+    console.log(`Uploaded thumbnail to FTP: ${thumbnailRemotePath}`);
+
+    // Delete the temporary thumbnail
+    fs.unlinkSync(thumbnailPath);
+    
+    return {
+      fullPath: fullRemotePath,
+      thumbnailPath: thumbnailRemotePath
+    };
   } catch (error) {
     console.error('Error uploading to FTP:', error);
     throw error;
   } finally {
     client.close();
+  }
+}
+
+// Helper function to create thumbnails
+async function createThumbnail(sourceFilePath, outputFilePath) {
+  try {
+    // Create a 300px width thumbnail while maintaining aspect ratio
+    await sharp(sourceFilePath)
+      .resize({ width: 300 })
+      .jpeg({ quality: 80 })
+      .toFile(outputFilePath);
+    
+    console.log(`Created thumbnail: ${outputFilePath}`);
+    return true;
+  } catch (error) {
+    console.error(`Error creating thumbnail: ${error}`);
+    throw error;
   }
 }
 
@@ -734,7 +803,7 @@ app.get('/api/gallery/event/:date', (req, res) => {
   const query = `
     SELECT 
       p.id, p.filename, p.title, p.description, p.tags,
-      ph.name as photographer_name 
+      p.photographer_id, ph.name as photographer_name 
     FROM photos p
     JOIN photographers ph ON p.photographer_id = ph.id
     WHERE DATE_FORMAT(p.event_date, '%Y-%m-%d') = ?
@@ -758,12 +827,13 @@ app.post('/api/gallery/upload', async (req, res) => {
   console.log('==== PHOTO UPLOAD REQUEST RECEIVED ====');
 
   try {
-    // Set up multer for file uploads
-    const uploadDir = '/tmp/suitwalk-gallery'; // Use Vercel's temporary directory
+    // Use Vercel's temporary directory for uploads
+    const uploadDir = '/tmp/suitwalk-gallery';
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
 
+    // Set up multer for file uploads
     const storage = multer.diskStorage({
       destination: uploadDir,
       filename: (req, file, cb) => {
@@ -802,14 +872,108 @@ app.post('/api/gallery/upload', async (req, res) => {
       return res.status(401).json({ error: 'Invalid photographer key' });
     }
 
-    // Upload files to the Plesk server via FTP
-    for (const file of files) {
-      const remoteFilePath = `${process.env.FTP_UPLOAD_DIR}/${file.filename}`;
-      await uploadToFTP(file.path, remoteFilePath);
-      fs.unlinkSync(file.path); // Delete the temporary file after successful upload
+    // Parse telegram data
+    let telegramData;
+    try {
+      telegramData = JSON.parse(req.body.telegramData || '{}');
+    } catch (error) {
+      console.error('Error parsing telegramData:', error);
+      files.forEach(file => fs.unlinkSync(file.path));
+      return res.status(400).json({ error: 'Invalid telegramData format' });
     }
 
-    res.status(200).json({ success: true, message: `${files.length} files uploaded successfully` });
+    // Connect to the database to find or create photographer
+    const photoDb = createPhotoDbConnection();
+    
+    try {
+      // Find or create photographer
+      const [photographers] = await photoDb.promise().query(
+        'SELECT id FROM photographers WHERE telegram_id = ?',
+        [telegramData.id]
+      );
+      
+      let photographerId;
+      
+      if (photographers.length === 0) {
+        // Create new photographer
+        const photographerName = `${telegramData.first_name || ''} ${telegramData.last_name || ''}`.trim();
+        const [result] = await photoDb.promise().execute(
+          'INSERT INTO photographers (name, telegram_id, website, bio) VALUES (?, ?, NULL, NULL)',
+          [photographerName, telegramData.id]
+        );
+        photographerId = result.insertId;
+        console.log(`Created new photographer with ID ${photographerId}`);
+      } else {
+        photographerId = photographers[0].id;
+        console.log(`Using existing photographer with ID ${photographerId}`);
+      }
+      
+      // Get other form fields
+      const eventDate = req.body.eventDate || new Date().toISOString().split('T')[0];
+      const title = req.body.title || '';
+      const tags = req.body.tags || '';
+      
+      // Upload files to the Plesk server via FTP and insert to database
+      for (const file of files) {
+        try {
+          // Get event date and photographer info
+          const eventDate = req.body.eventDate || new Date().toISOString().split('T')[0];
+          const title = req.body.title || '';
+          const tags = req.body.tags || '';
+          
+          // Look up photographer name for directory structure
+          const [photographerRows] = await photoDb.promise().query(
+            'SELECT name FROM photographers WHERE id = ?',
+            [photographerId]
+          );
+          
+          const photographerName = photographerRows[0].name;
+          
+          // Upload the file and create directory structure
+          const uploadPaths = await uploadToFTP(
+            file.path, 
+            eventDate, 
+            photographerId, 
+            photographerName
+          );
+          
+          // Get image metadata
+          const metadata = await sharp(file.path).metadata();
+          
+          // Insert into database
+          await photoDb.promise().query(
+            `INSERT INTO photos 
+            (filename, event_date, photographer_id, title, tags, upload_date, download_count, file_size, width, height)
+            VALUES (?, ?, ?, ?, ?, NOW(), 0, ?, ?, ?)`,
+            [
+              file.filename,
+              eventDate,
+              photographerId,
+              title,
+              tags,
+              file.size,
+              metadata.width,
+              metadata.height
+            ]
+          );
+          
+          console.log(`File ${file.filename} uploaded and saved to database`);
+          
+          // Delete the temporary file
+          fs.unlinkSync(file.path);
+        } catch (error) {
+          console.error(`Error processing file ${file.filename}:`, error);
+          // Continue with other files even if one fails
+        }
+      }
+
+      photoDb.end();
+      res.status(200).json({ success: true, message: `${files.length} files uploaded successfully` });
+    } catch (error) {
+      photoDb.end();
+      console.error('Error in photo upload process:', error);
+      res.status(500).json({ error: 'Database error', details: error.message });
+    }
   } catch (error) {
     console.error('Error in /api/gallery/upload:', error);
     res.status(500).json({ error: 'Server error', details: error.message });
@@ -1044,10 +1208,11 @@ app.get('/api/gallery/download/:id', async (req, res) => {
   const photoDb = createPhotoDbConnection();
   
   try {
-    // Get photo info
+    // Get photo info with photographer name
     const [rows] = await photoDb.promise().query(
       `SELECT 
-        p.id, p.filename, p.event_date, ph.name as photographer_name, ph.id as photographer_id
+        p.id, p.filename, p.event_date, 
+        ph.name as photographer_name, ph.id as photographer_id
        FROM photos p
        JOIN photographers ph ON p.photographer_id = ph.id
        WHERE p.id = ?`,
@@ -1061,31 +1226,23 @@ app.get('/api/gallery/download/:id', async (req, res) => {
     
     const photo = rows[0];
     const eventDate = photo.event_date.toISOString().split('T')[0];
-    let filePath;
-
-    if (process.env.PHOTO_UPLOAD_DIR) {
-      filePath = path.join(
-        process.env.PHOTO_UPLOAD_DIR,
-        eventDate,
-        photo.photographer_id.toString(),
-        'full',
-        photo.filename
-      );
-    } else {
-      const homeDir = process.env.USERPROFILE || process.env.HOME;
-      filePath = path.join(
-        homeDir,
-        'suitwalk-gallery',
-        eventDate,
-        photo.photographer_id.toString(),
-        'full',
-        photo.filename
-      );
-    }
+    
+    // MODIFIED: Force the webRoot to be /test.suitwalk-linz.at
+    const webRoot = '/test.suitwalk-linz.at';
+    
+    // Build filepath matching the structure the frontend expects
+    const filePath = path.join(
+      webRoot,
+      'gallery',
+      eventDate,
+      photo.photographer_id.toString(),
+      'full',
+      photo.filename
+    );
     
     if (!fs.existsSync(filePath)) {
       photoDb.end();
-      return res.status(404).json({ error: 'Photo file not found' });
+      return res.status(404).json({ error: 'Photo file not found ', filePath });
     }
     
     // Increment download counter
@@ -1320,8 +1477,8 @@ app.post('/api/admin/add-photographer', authenticateUser, async (req, res) => {
     
     // Insert the new photographer
     const [result] = await photoDb.promise().execute(
-      'INSERT INTO photographers (name, telegram_id, username) VALUES (?, ?, ?)',
-      [photographerName, telegram_id, user.username || null]
+      'INSERT INTO photographers (name, telegram_id, website, bio) VALUES (?, ?, NULL, NULL)',
+      [photographerName, telegram_id]
     );
     
     photoDb.end();
@@ -1481,12 +1638,10 @@ app.post('/api/admin/photographers/add', authenticateAdmin, (req, res) => {
           // Add photographer to Gallery database
           photoDb.query(
             `INSERT INTO photographers 
-              (name, email, telegram_username, telegram_id, created_at) 
-             VALUES (?, ?, ?, ?, NOW())`,
+              (name, telegram_id, website, bio) 
+             VALUES (?, ?, NULL, NULL)`,
             [
               photographer.name,
-              photographer.email || null,
-              photographer.telegram_username || null,
               photographer.telegram_id || null
             ],
             (err, result) => {
