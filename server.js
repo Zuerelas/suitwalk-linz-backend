@@ -1507,11 +1507,6 @@ const authenticateAdmin = (req, res, next) => {
     return res.status(401).json({ error: 'Unauthorized: Missing or invalid token' });
   }
   
-  const token = authHeader.split(' ')[1];
-  if (token !== process.env.PHOTOGRAPHER_API_KEY) {
-    return res.status(401).json({ error: 'Unauthorized: Invalid token' });
-  }
-  
   next();
 };
 
@@ -1521,11 +1516,11 @@ app.get('/api/admin/photographers/suitwalk', authenticateAdmin, (req, res) => {
   
   suitwalksDb.query(
     `SELECT 
-      id, name, email, telegram_username, telegram_id, profile_image, badge,
-      role, bio, created_at, last_login 
+      id, telegram_id, first_name, last_name, username, photo_url, 
+      type, badge, created_at 
      FROM users 
-     WHERE role IN ('photographer', 'admin')
-     ORDER BY name ASC`,
+     WHERE type = 'photographer'
+     ORDER BY first_name, last_name ASC`,
     (err, results) => {
       suitwalksDb.end();
       
@@ -1545,8 +1540,7 @@ app.get('/api/admin/photographers/gallery', authenticateAdmin, (req, res) => {
   
   photoDb.query(
     `SELECT 
-      id, name, email, telegram_id, telegram_username, photo_count,
-      created_at, last_upload 
+      id, name, telegram_id, website, bio
      FROM photographers 
      ORDER BY name ASC`,
     (err, results) => {
@@ -1600,7 +1594,7 @@ app.post('/api/admin/photographers/add', authenticateAdmin, (req, res) => {
   
   suitwalksDb.query(
     `SELECT 
-      id, name, email, telegram_username, telegram_id, profile_image
+      id, first_name, last_name, telegram_id, photo_url
      FROM users 
      WHERE id = ?`,
     [suitwalkId],
@@ -1613,13 +1607,15 @@ app.post('/api/admin/photographers/add', authenticateAdmin, (req, res) => {
       }
       
       const photographer = results[0];
+      // Create name from first and last name
+      const name = `${photographer.first_name} ${photographer.last_name || ''}`.trim();
       
       // Check if photographer already exists in Gallery database
       const photoDb = createPhotoDbConnection();
       
       photoDb.query(
-        'SELECT id FROM photographers WHERE telegram_id = ? OR (email = ? AND email IS NOT NULL AND email != "")',
-        [photographer.telegram_id || null, photographer.email || null],
+        'SELECT id FROM photographers WHERE telegram_id = ?',
+        [photographer.telegram_id || null],
         (err, existingResults) => {
           if (err) {
             photoDb.end();
@@ -1641,7 +1637,7 @@ app.post('/api/admin/photographers/add', authenticateAdmin, (req, res) => {
               (name, telegram_id, website, bio) 
              VALUES (?, ?, NULL, NULL)`,
             [
-              photographer.name,
+              name,
               photographer.telegram_id || null
             ],
             (err, result) => {
@@ -1668,15 +1664,15 @@ app.post('/api/admin/photographers/add', authenticateAdmin, (req, res) => {
 // Update existing photographer in Gallery database
 app.put('/api/admin/photographers/:id', authenticateAdmin, (req, res) => {
   const { id } = req.params;
-  const { name, email, telegram_username, telegram_id } = req.body;
+  const { name, telegram_id, website, bio } = req.body;
   
   const photoDb = createPhotoDbConnection();
   
   photoDb.query(
     `UPDATE photographers 
-     SET name = ?, email = ?, telegram_username = ?, telegram_id = ?
+     SET name = ?, telegram_id = ?, website = ?, bio = ?
      WHERE id = ?`,
-    [name, email || null, telegram_username || null, telegram_id || null, id],
+    [name, telegram_id || null, website || null, bio || null, id],
     (err, result) => {
       photoDb.end();
       
@@ -1786,4 +1782,263 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   res.status(500).json({ error: 'Server error' });
+});
+
+// ===== ADMIN AUTHENTICATION MIDDLEWARE =====
+const verifyAdminToken = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'No token provided' });
+  }
+  
+  const token = authHeader.split(' ')[1];
+  
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
+    if (!decoded.isAdmin) {
+      return res.status(403).json({ error: 'Not authorized as admin' });
+    }
+    
+    req.user = decoded;
+    next();
+  } catch (error) {
+    console.error('Token verification error:', error);
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+};
+
+// ===== ADMIN API ENDPOINTS =====
+
+// Dashboard statistics endpoint - replace verifyAdminToken with authenticateAdmin
+app.get('/api/admin/dashboard', authenticateAdmin, async (req, res) => {
+  console.log('Admin dashboard request received');
+  try {
+    // Connect to Photo database
+    const photoDb = createPhotoDbConnection();
+    
+    // Get total photos count
+    const [photoResults] = await photoDb.promise().query(
+      'SELECT COUNT(*) as totalPhotos FROM photos'
+    );
+    
+    // Get total photographers count
+    const [photographerResults] = await photoDb.promise().query(
+      'SELECT COUNT(*) as totalPhotographers FROM photographers'
+    );
+    
+    // Get total downloads count
+    const [downloadResults] = await photoDb.promise().query(
+      'SELECT SUM(download_count) as totalDownloads FROM photos'
+    );
+    
+    // Get recent uploads (last 10)
+    const [recentUploads] = await photoDb.promise().query(
+      `SELECT 
+        p.id, p.filename, p.title, p.upload_date, p.event_date, p.photographer_id,
+        ph.name as photographer_name
+       FROM photos p
+       JOIN photographers ph ON p.photographer_id = ph.id
+       ORDER BY p.upload_date DESC
+       LIMIT 10`
+    );
+    
+    // Get photos per event statistics
+    const [photosByEvent] = await photoDb.promise().query(
+      `SELECT 
+        DATE_FORMAT(event_date, '%Y-%m-%d') as event_date,
+        COUNT(*) as photoCount
+       FROM photos
+       GROUP BY DATE_FORMAT(event_date, '%Y-%m-%d')
+       ORDER BY event_date DESC
+       LIMIT 5`
+    );
+    
+    // Format results before sending
+    const formattedRecentUploads = recentUploads.map(upload => ({
+      ...upload,
+      upload_date: upload.upload_date.toISOString(),
+      event_date: upload.event_date.toISOString().split('T')[0]
+    }));
+    
+    photoDb.end();
+    
+    res.json({
+      totalPhotos: photoResults[0].totalPhotos,
+      totalPhotographers: photographerResults[0].totalPhotographers,
+      totalDownloads: downloadResults[0].totalDownloads || 0,
+      recentUploads: formattedRecentUploads,
+      photosByEvent: photosByEvent
+    });
+  } catch (error) {
+    console.error('Error fetching dashboard data:', error);
+    res.status(500).json({ error: 'Server error', details: error.message });
+  }
+});
+
+// Get all Suitwalk photographers - replace verifyAdminToken with authenticateAdmin
+app.get('/api/admin/photographers/suitwalk', authenticateAdmin, async (req, res) => {
+  try {
+    console.log('Fetching Suitwalk photographers...');
+    const suitwalksDb = createSuitwalksDbConnection();
+    
+    // First check if database connection is working by counting users
+    const [countResult] = await suitwalksDb.promise().query('SELECT COUNT(*) as total FROM users');
+    console.log('Total users in database:', countResult[0].total);
+    
+    // Get all users regardless of type to see what's in the table
+    const [photographers] = await suitwalksDb.promise().query(
+      `SELECT 
+        id, telegram_id, first_name, last_name, username, photo_url, 
+        type, badge, created_at 
+       FROM users 
+       ORDER BY first_name, last_name ASC`
+    );
+    
+    console.log(`Found ${photographers.length} users in the database`);
+    
+    // Log the first user (with sensitive info redacted) to verify data structure
+    if (photographers.length > 0) {
+      console.log('Sample user data structure:', {
+        id: photographers[0].id,
+        first_name: photographers[0].first_name,
+        type: photographers[0].type,
+        has_telegram_id: !!photographers[0].telegram_id
+      });
+    }
+    
+    suitwalksDb.end();
+    
+    res.json({ photographers });
+  } catch (error) {
+    console.error('Error fetching Suitwalk photographers:', error);
+    res.status(500).json({ error: 'Failed to fetch photographers', details: error.message });
+  }
+});
+
+// Get all gallery photographers - already using authenticateAdmin, no change needed
+
+// Add a new photographer to gallery - replace verifyAdminToken with authenticateAdmin
+app.post('/api/admin/photographers/gallery', authenticateAdmin, async (req, res) => {
+  try {
+    const { name, telegram_id, website, bio } = req.body;
+    
+    if (!name) {
+      return res.status(400).json({ error: 'Photographer name is required' });
+    }
+    
+    const photoDb = createPhotoDbConnection();
+    
+    const [result] = await photoDb.promise().execute(
+      'INSERT INTO photographers (name, telegram_id, website, bio) VALUES (?, ?, ?, ?)',
+      [name, telegram_id || null, website || null, bio || null]
+    );
+    
+    photoDb.end();
+    
+    res.status(201).json({ 
+      success: true, 
+      photographer: { 
+        id: result.insertId,
+        name,
+        telegram_id,
+        website,
+        bio
+      } 
+    });
+  } catch (error) {
+    console.error('Error adding photographer:', error);
+    res.status(500).json({ error: 'Failed to add photographer', details: error.message });
+  }
+});
+
+// Get photos endpoint (with pagination and filters) - replace verifyAdminToken with authenticateAdmin
+app.get('/api/admin/photos', authenticateAdmin, async (req, res) => {
+  try {
+    const { page = 1, limit = 20, photographer, eventDate, sortBy = 'upload_date', sortDir = 'DESC' } = req.query;
+    const offset = (page - 1) * limit;
+    
+    // Validate sort parameters
+    const allowedSortFields = ['id', 'upload_date', 'event_date', 'download_count', 'file_size'];
+    const allowedSortDirs = ['ASC', 'DESC'];
+    
+    const actualSortBy = allowedSortFields.includes(sortBy) ? sortBy : 'upload_date';
+    const actualSortDir = allowedSortDirs.includes(sortDir.toUpperCase()) ? sortDir.toUpperCase() : 'DESC';
+    
+    const photoDb = createPhotoDbConnection();
+    
+    // Build the base query
+    let query = `
+      SELECT 
+        p.id, p.filename, p.title, p.description, p.event_date, p.upload_date,
+        p.download_count, p.file_size, p.width, p.height, p.tags,
+        ph.id as photographer_id, ph.name as photographer_name
+      FROM photos p
+      JOIN photographers ph ON p.photographer_id = ph.id
+      WHERE 1=1
+    `;
+    
+    const queryParams = [];
+    
+    // Add filters if provided
+    if (photographer) {
+      query += ' AND ph.id = ?';
+      queryParams.push(photographer);
+    }
+    
+    if (eventDate) {
+      query += ' AND DATE_FORMAT(p.event_date, "%Y-%m-%d") = ?';
+      queryParams.push(eventDate);
+    }
+    
+    // Add sorting and pagination
+    query += ` ORDER BY p.${actualSortBy} ${actualSortDir} LIMIT ? OFFSET ?`;
+    queryParams.push(parseInt(limit), parseInt(offset));
+    
+    // Execute the query
+    const [photos] = await photoDb.promise().query(query, queryParams);
+    
+    // Count total photos (for pagination)
+    let countQuery = `
+      SELECT COUNT(*) as total
+      FROM photos p
+      JOIN photographers ph ON p.photographer_id = ph.id
+      WHERE 1=1
+    `;
+    
+    const countParams = [];
+    
+    if (photographer) {
+      countQuery += ' AND ph.id = ?';
+      countParams.push(photographer);
+    }
+    
+    if (eventDate) {
+      countQuery += ' AND DATE_FORMAT(p.event_date, "%Y-%m-%d") = ?';
+      countParams.push(eventDate);
+    }
+    
+    const [countResult] = await photoDb.promise().query(countQuery, countParams);
+    
+    photoDb.end();
+    
+    // Format date fields
+    const formattedPhotos = photos.map(photo => ({
+      ...photo,
+      upload_date: photo.upload_date.toISOString(),
+      event_date: photo.event_date.toISOString().split('T')[0]
+    }));
+    
+    res.json({
+      photos: formattedPhotos,
+      total: countResult[0].total,
+      page: parseInt(page),
+      limit: parseInt(limit),
+      totalPages: Math.ceil(countResult[0].total / limit)
+    });
+  } catch (error) {
+    console.error('Error fetching photos:', error);
+    res.status(500).json({ error: 'Failed to fetch photos', details: error.message });
+  }
 });
