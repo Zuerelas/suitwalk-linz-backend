@@ -24,8 +24,7 @@ function createSuitwalksDbConnection() {
       password: process.env.DB_PASSWORD,
       database: process.env.DB_NAME, // "suitwalks" database
       ssl: process.env.DB_SSL === 'true' ? true : undefined,
-      connectTimeout: 10000, // 10 second timeout
-      acquireTimeout: 10000
+      connectTimeout: 10000 // 10 second timeout
     });
     
     // Add connection error handler
@@ -51,8 +50,7 @@ function createPhotoDbConnection() {
       password: process.env.DB_PASSWORD,
       database: 'Photos',
       ssl: process.env.DB_SSL === 'true' ? true : undefined,
-      connectTimeout: 10000, // 10 second timeout
-      acquireTimeout: 10000
+      connectTimeout: 10000 // 10 second timeout
     });
     
     // Add connection error handler
@@ -1503,7 +1501,7 @@ app.post('/api/admin/add-photographer', authenticateUser, async (req, res) => {
 // Authentication middleware for admin routes
 const authenticateAdmin = (req, res, next) => {
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  if (!authHeader) {
     return res.status(401).json({ error: 'Unauthorized: Missing or invalid token' });
   }
   
@@ -1519,7 +1517,7 @@ app.get('/api/admin/photographers/suitwalk', authenticateAdmin, (req, res) => {
       id, telegram_id, first_name, last_name, username, photo_url, 
       type, badge, created_at 
      FROM users 
-     WHERE type = 'photographer'
+     WHERE type = 'Fotograf'
      ORDER BY first_name, last_name ASC`,
     (err, results) => {
       suitwalksDb.end();
