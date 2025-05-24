@@ -285,6 +285,25 @@ if (process.env.DB_HOST && process.env.DB_USER && process.env.DB_PASSWORD && pro
                         console.log('Users table verified/created successfully');
                     }
                 });
+              // Add this to your database initialization section (around line 282)
+              db.query(`
+                CREATE TABLE IF NOT EXISTS suitwalk_events (
+                  id INT AUTO_INCREMENT PRIMARY KEY,
+                  event_date DATE NOT NULL,
+                  sign_in_start DATETIME NOT NULL,
+                  sign_in_end DATETIME NOT NULL,
+                  title VARCHAR(255),
+                  description TEXT,
+                  is_next BOOLEAN DEFAULT false,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+              `, (tableErr) => {
+                if (tableErr) {
+                  console.error('Error creating suitwalk_events table:', tableErr);
+                } else {
+                  console.log('Suitwalk_events table verified/created successfully');
+                }
+              });
             }
         });
     } catch (error) {
@@ -354,174 +373,194 @@ app.get('/', (req, res) => {
     res.send('API server is running');
 });
 
+// Replace the current Telegram Auth endpoint with this async version
+
 // Telegram Auth Endpoint with improved error handling and logging
-app.get('/api/telegram-auth', (req, res) => {
-    console.log('Received Telegram auth request');
-    console.log('Query params:', req.query);
-    
-    const telegramData = req.query;
-    
-    // Read custom parameters from the query string
-    const customType = req.query.custom_type;
-    const customBadge = req.query.custom_badge;
-    
-    console.log('Custom badge value:', customBadge);
-    console.log('Custom type value:', customType);
+app.get('/api/telegram-auth', async (req, res) => {  // Add async here
+  console.log('Received Telegram auth request');
+  console.log('Query params:', req.query);
 
-    if (customType === 'photo_upload') {
-      // Set type in the telegram data for later validation
-      telegramData.type = 'photo_upload';
-      
-      // Redirect to the photo upload page with data in URL fragment
-      // Using fragment instead of query to avoid exposing auth data in server logs
-      const userDataParam = encodeURIComponent(JSON.stringify(telegramData));
-      return res.redirect(`https://test.suitwalk-linz.at/#/galerie/upload?telegramAuth=${userDataParam}`);
+  const telegramData = req.query;
+
+  // Read custom parameters from the query string
+  const customType = req.query.custom_type;
+  const customBadge = req.query.custom_badge;
+
+  console.log('Custom badge value:', customBadge);
+  console.log('Custom type value:', customType);
+
+
+  if (customType === 'photo_upload') {
+    // Set type in the telegram data for later validation
+    telegramData.type = 'photo_upload';
+
+    // Redirect to the photo upload page with data in URL fragment
+    // Using fragment instead of query to avoid exposing auth data in server logs
+    const userDataParam = encodeURIComponent(JSON.stringify(telegramData));
+    return res.redirect(`https://test.suitwalk-linz.at/#/galerie/upload?telegramAuth=${userDataParam}`);
+  }
+
+  if (!telegramData || !telegramData.id) {
+    console.error('No Telegram data received');
+    return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=no_data');
+  }
+
+  try {
+    if (!verifyTelegramAuth(telegramData)) {
+      console.error('Invalid Telegram authentication');
+      return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=invalid_auth');
     }
-    
-    if (!telegramData || !telegramData.id) {
-        console.error('No Telegram data received');
-        return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=no_data');
+
+    const authDate = parseInt(telegramData.auth_date, 10);
+    const currentTime = Math.floor(Date.now() / 1000);
+    if (currentTime - authDate > 86400) {
+      console.error('Authentication expired');
+      return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=auth_expired');
     }
-    
-    try {
-        if (!verifyTelegramAuth(telegramData)) {
-            console.error('Invalid Telegram authentication');
-            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=invalid_auth');
-        }
 
-        const authDate = parseInt(telegramData.auth_date, 10);
-        const currentTime = Math.floor(Date.now() / 1000);
-        if (currentTime - authDate > 86400) {
-            console.error('Authentication expired');
-            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=auth_expired');
-        }
+    // Check if database is available
+    if (!db) {
+      console.error('Database connection is not available');
+      return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
+    }
 
-        // Check if database is available
-        if (!db) {
-            console.error('Database connection is not available');
+    // Check if registration is open for non-photo-upload and non-unregistration requests
+    if (customType !== 'photo_upload' && customType !== 'Abmelden') {
+      const registrationOpen = await isRegistrationOpen();
+      if (!registrationOpen) {
+        console.error('Registration is closed');
+        return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=registration_closed');
+      }
+    }
+
+    // Test database connection before proceeding
+    db.getConnection((connErr, connection) => {
+      if (connErr) {
+        console.error('Failed to get database connection:', connErr);
+        return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
+      }
+
+      connection.release(); // Release the connection immediately
+
+      // If this is a badge sign-up, first check if the user exists
+      if (customBadge === 'true') {
+        const checkUserQuery = `SELECT * FROM users WHERE telegram_id = ?`;
+
+        db.query(checkUserQuery, [telegramData.id], (checkErr, results) => {
+          if (checkErr) {
+            console.error('Database check error:', checkErr);
             return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
-        }
+          }
 
-        // Test database connection before proceeding
-        db.getConnection((connErr, connection) => {
-            if (connErr) {
-                console.error('Failed to get database connection:', connErr);
+          // If user doesn't exist, redirect to error
+          if (results.length === 0) {
+            console.error('Tried to order badge but user not registered');
+            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=not_registered');
+          }
+
+          // User exists, update only badge status
+          const updateQuery = `
+                      UPDATE users 
+                      SET badge = 1,
+                          first_name = ?,
+                          last_name = ?,
+                          username = ?,
+                          photo_url = ?,
+                          auth_date = FROM_UNIXTIME(?)
+                      WHERE telegram_id = ?
+                  `;
+
+          db.query(
+            updateQuery,
+            [
+              telegramData.first_name,
+              telegramData.last_name || '',
+              telegramData.username || '',
+              telegramData.photo_url || '',
+              authDate,
+              telegramData.id
+            ],
+            (updateErr) => {
+              if (updateErr) {
+                console.error('Database update error:', updateErr);
                 return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
-            }
-            
-            connection.release(); // Release the connection immediately
-            
-            // If this is a badge sign-up, first check if the user exists
-            if (customBadge === 'true') {
-                const checkUserQuery = `SELECT * FROM users WHERE telegram_id = ?`;
-                
-                db.query(checkUserQuery, [telegramData.id], (checkErr, results) => {
-                    if (checkErr) {
-                        console.error('Error checking user existence:', checkErr);
-                        return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
-                    }
-                    
-                    // If user doesn't exist, redirect to error
-                    if (results.length === 0) {
-                        console.error('User tried to order badge but is not registered');
-                        return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=register_first');
-                    }
-                    
-                    // User exists, update only badge status
-                    const updateQuery = `
-                        UPDATE users 
-                        SET badge = 1,
-                            first_name = ?,
-                            last_name = ?,
-                            username = ?,
-                            photo_url = ?,
-                            auth_date = FROM_UNIXTIME(?)
-                        WHERE telegram_id = ?
-                    `;
-                    
-                    db.query(
-                        updateQuery,
-                        [
-                            telegramData.first_name,
-                            telegramData.last_name || '',
-                            telegramData.username || '',
-                            telegramData.photo_url || '',
-                            authDate,
-                            telegramData.id
-                        ],
-                        (updateErr) => {
-                            if (updateErr) {
-                                console.error('Database update error:', updateErr);
-                                return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
-                            }
-                            
-                            console.log('Badge status updated successfully');
-                            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/erfolgreich');
-                        }
-                    );
-                });
-            } else if (customType === 'Abmelden') {
-                // User wants to unregister, delete user
-                const deleteQuery = `DELETE FROM users WHERE telegram_id = ?`;
-                
-                db.query(deleteQuery, [telegramData.id], (deleteErr, result) => {
-                    if (deleteErr) {
-                        console.error('Database delete error:', deleteErr);
-                        return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
-                    }
-                    
-                    if (result.affectedRows === 0) {
-                        console.log('No user found to delete');
-                        return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=not_registered');
-                    }
-                    
-                    console.log('User successfully deleted');
-                    return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/abgemeldet');
-                });
-            } else {
-                // Normal registration, insert or update user
-                const query = `
-                    INSERT INTO users (telegram_id, first_name, last_name, username, photo_url, auth_date, type, badge)
-                    VALUES (?, ?, ?, ?, ?, FROM_UNIXTIME(?), ?, ?)
-                    ON DUPLICATE KEY UPDATE
-                    first_name = VALUES(first_name),
-                    last_name = VALUES(last_name),
-                    username = VALUES(username),
-                    photo_url = VALUES(photo_url),
-                    auth_date = VALUES(auth_date),
-                    type = VALUES(type);
-                `;
+              }
 
-                db.query(
-                    query,
-                    [
-                        telegramData.id,
-                        telegramData.first_name,
-                        telegramData.last_name || '',
-                        telegramData.username || '',
-                        telegramData.photo_url || '',
-                        authDate,
-                        customType || 'Suiter',
-                        0  // Default badge to 0 for normal registrations
-                    ],
-                    (err) => {
-                        if (err) {
-                            console.error('Database query error:', err);
-                            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
-                        }
-                        
-                        console.log('User data saved successfully');
-                        return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/erfolgreich');
-                    }
-                );
+              console.log('Badge ordered successfully');
+              return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/badge-success');
             }
+          );
         });
-    } catch (error) {
-        console.error('General error:', error);
-        return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=server_error');
-    }
-});
+      } else if (customType === 'Abmelden') {
+        // User wants to unregister, delete user
+        const deleteQuery = `DELETE FROM users WHERE telegram_id = ?`;
 
+        db.query(deleteQuery, [telegramData.id], (deleteErr, result) => {
+          if (deleteErr) {
+            console.error('Database delete error:', deleteErr);
+            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
+          }
+
+          if (result.affectedRows === 0) {
+            console.log('No user found to delete');
+            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=not_registered');
+          }
+
+          console.log('User successfully deleted');
+          return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/abgemeldet');
+        });
+      } else {
+        // Normal registration, insert or update user
+        const query = `
+                  INSERT INTO users (telegram_id, first_name, last_name, username, photo_url, auth_date, type, badge)
+                  VALUES (?, ?, ?, ?, ?, FROM_UNIXTIME(?), ?, ?)
+                  ON DUPLICATE KEY UPDATE
+                  first_name = VALUES(first_name),
+                  last_name = VALUES(last_name),
+                  username = VALUES(username),
+                  photo_url = VALUES(photo_url),
+                  auth_date = VALUES(auth_date),
+                  type = VALUES(type);
+              `;
+
+        db.query(
+          query,
+          [
+            telegramData.id,
+            telegramData.first_name,
+            telegramData.last_name || '',
+            telegramData.username || '',
+            telegramData.photo_url || '',
+            authDate,
+            customType || 'Suiter',
+            0
+          ],
+          (err) => {
+            if (err) {
+              console.error('Database error:', err);
+              return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
+            }
+
+            console.log('User registered successfully');
+            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/success');
+          }
+        );
+      }
+    });
+  } catch (error) {
+    console.error('General error:', error);
+    return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=server_error');
+  }
+});
+// Authentication middleware for admin routes
+const authenticateAdmin = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return res.status(401).json({ error: 'Unauthorized: Missing or invalid token' });
+  }
+
+  next();
+};
 // Handle user deletion
 app.get('/api/telegram-delete', async (req, res) => {
     console.log('Received request to delete user');
@@ -1123,6 +1162,263 @@ app.get('/api/public-stats', (req, res) => {
         });
     });
 });
+
+// Add this function to check if registration is open
+async function isRegistrationOpen() {
+  const db = createSuitwalksDbConnection();
+
+  try {
+    const [events] = await db.promise().query(
+      `SELECT id FROM suitwalk_events
+       WHERE is_next = true
+       AND NOW() BETWEEN sign_in_start AND sign_in_end
+       LIMIT 1`
+    );
+
+    db.end();
+    return events.length > 0;
+  } catch (error) {
+    db.end();
+    console.error('Error checking registration status:', error);
+    return false;
+  }
+}
+
+// Modify your existing Telegram Auth endpoint to check registration period
+
+
+
+// Modify the existing create event endpoint (around line 1135)
+app.post('/api/admin/suitwalk-events', authenticateAdmin, async (req, res) => {
+  const { event_date, sign_in_start, sign_in_end, title, description, is_next } = req.body;
+  if (!event_date || !sign_in_start || !sign_in_end) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+  const db = createSuitwalksDbConnection();
+  try {
+    // If this event is marked as next, unset any existing next event
+    if (is_next) {
+      await db.promise().execute(
+        `UPDATE suitwalk_events SET is_next = false WHERE is_next = true`
+      );
+    }
+
+    const [result] = await db.promise().execute(
+      `INSERT INTO suitwalk_events (event_date, sign_in_start, sign_in_end, title, description, is_next)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [event_date, sign_in_start, sign_in_end, title || null, description || null, is_next || false]
+    );
+
+    db.end();
+    res.status(201).json({ success: true, id: result.insertId });
+  } catch (error) {
+    db.end();
+    console.error('Error creating event:', error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Modify the existing list events endpoint (around line 1159)
+app.get('/api/admin/suitwalk-events', authenticateAdmin, async (req, res) => {
+  const db = createSuitwalksDbConnection();
+  try {
+    const [events] = await db.promise().query(
+      `SELECT id, event_date, sign_in_start, sign_in_end, title, description, is_next, created_at
+       FROM suitwalk_events
+       ORDER BY event_date DESC`
+    );
+    db.end();
+    res.json({ events });
+  } catch (error) {
+    db.end();
+    console.error('Error fetching events:', error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+// Add this after the list events endpoint
+app.put('/api/admin/suitwalk-events/:id', authenticateAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { event_date, sign_in_start, sign_in_end, title, description, is_next } = req.body;
+
+  if (!event_date || !sign_in_start || !sign_in_end) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  const db = createSuitwalksDbConnection();
+  try {
+    // If this event is marked as next, unset any existing next event
+    if (is_next) {
+      await db.promise().execute(
+        `UPDATE suitwalk_events SET is_next = false WHERE is_next = true AND id != ?`,
+        [id]
+      );
+    }
+
+    const [result] = await db.promise().execute(
+      `UPDATE suitwalk_events 
+       SET event_date = ?, sign_in_start = ?, sign_in_end = ?, 
+           title = ?, description = ?, is_next = ?
+       WHERE id = ?`,
+      [event_date, sign_in_start, sign_in_end, title || null, description || null, is_next || false, id]
+    );
+
+    if (result.affectedRows === 0) {
+      db.end();
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    db.end();
+    res.json({ success: true, message: 'Event updated successfully' });
+  } catch (error) {
+    db.end();
+    console.error('Error updating event:', error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Add this after the update event endpoint
+app.post('/api/admin/suitwalk-events/:id/set-next', authenticateAdmin, async (req, res) => {
+  const { id } = req.params;
+  const db = createSuitwalksDbConnection();
+
+  try {
+    // First, unset any current "next" events
+    await db.promise().execute(
+      `UPDATE suitwalk_events SET is_next = false WHERE is_next = true`
+    );
+
+    // Then set the specified event as next
+    const [result] = await db.promise().execute(
+      `UPDATE suitwalk_events SET is_next = true WHERE id = ?`,
+      [id]
+    );
+
+    if (result.affectedRows === 0) {
+      db.end();
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    db.end();
+    res.json({ success: true, message: 'Event set as next successfully' });
+  } catch (error) {
+    db.end();
+    console.error('Error setting next event:', error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Add this after the set next event endpoint
+app.delete('/api/admin/suitwalk-events/:id', authenticateAdmin, async (req, res) => {
+  const { id } = req.params;
+  const db = createSuitwalksDbConnection();
+
+  try {
+    const [result] = await db.promise().execute(
+      `DELETE FROM suitwalk_events WHERE id = ?`,
+      [id]
+    );
+
+    if (result.affectedRows === 0) {
+      db.end();
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    db.end();
+    res.json({ success: true, message: 'Event deleted successfully' });
+  } catch (error) {
+    db.end();
+    console.error('Error deleting event:', error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Add this endpoint for public access to the next event
+app.get('/api/next-suitwalk', async (req, res) => {
+  const db = createSuitwalksDbConnection();
+
+  try {
+    const [events] = await db.promise().query(
+      `SELECT id, event_date, sign_in_start, sign_in_end, title, description
+       FROM suitwalk_events
+       WHERE is_next = true
+       LIMIT 1`
+    );
+
+    db.end();
+
+    if (events.length === 0) {
+      return res.json({ event: null });
+    }
+
+    res.json({ event: events[0] });
+  } catch (error) {
+    db.end();
+    console.error('Error fetching next event:', error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+// Add this endpoint to check current registration status
+app.get('/api/registration-status', async (req, res) => {
+  try {
+    const db = createSuitwalksDbConnection();
+
+    const [events] = await db.promise().query(
+      `SELECT id, event_date, sign_in_start, sign_in_end, title, description, 
+              NOW() BETWEEN sign_in_start AND sign_in_end as is_open
+       FROM suitwalk_events
+       WHERE is_next = true
+       LIMIT 1`
+    );
+
+    db.end();
+
+    if (events.length === 0) {
+      return res.json({
+        status: 'no_event',
+        message: 'No upcoming Suitwalk event found',
+        event: null
+      });
+    }
+
+    const event = events[0];
+    const now = new Date();
+    const eventDate = new Date(event.event_date);
+    const signInStart = new Date(event.sign_in_start);
+    const signInEnd = new Date(event.sign_in_end);
+
+    let status, message;
+
+    if (now > eventDate) {
+      status = 'past';
+      message = 'This Suitwalk event has already taken place';
+    } else if (now >= signInStart && now <= signInEnd) {
+      status = 'open';
+      message = 'Registration is currently open';
+    } else if (now < signInStart) {
+      status = 'not_yet_open';
+      message = 'Registration is not yet open';
+    } else {
+      status = 'closed';
+      message = 'Registration is closed';
+    }
+
+    res.json({
+      status,
+      message,
+      event: {
+        id: event.id,
+        event_date: event.event_date,
+        sign_in_start: event.sign_in_start,
+        sign_in_end: event.sign_in_end,
+        title: event.title,
+        description: event.description
+      }
+    });
+  } catch (error) {
+    console.error('Error checking registration status:', error);
+    res.status(500).json({ error: 'Server error', details: error.message });
+  }
+});
 // Add this function for authenticating photographers or admins
 function authenticateUser(req, res, next) {
   // Get token from Authorization header
@@ -1331,46 +1627,62 @@ app.get('/api/test-endpoint', (req, res) => {
   });
 });
 
-// Add this endpoint to get event dates for dropdown
-app.get('/api/gallery/dates-events', (req, res) => {
+// Add this endpoint to get available event dates for photo uploads
+app.get('/api/gallery/dates-events', async (req, res) => {
   console.log('Event dates endpoint called');
-  console.log('Request origin:', req.headers.origin);
 
   // EXPLICITLY SET CORS HEADERS FOR THIS ENDPOINT
-  res.header('Access-Control-Allow-Origin', '*'); // Allow all origins for now
+  res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
 
-  const photoDb = createPhotoDbConnection();
+  try {
+    // First try to get the current "next" suitwalk event
+    const suitwalksDb = createSuitwalksDbConnection();
+    const [nextEvents] = await suitwalksDb.promise().query(
+      `SELECT DATE_FORMAT(event_date, '%Y-%m-%d') as date
+       FROM suitwalk_events
+       WHERE is_next = true
+       LIMIT 1`
+    );
+    suitwalksDb.end();
 
-  // Query to get distinct event dates
-  const query = `
-    SELECT DISTINCT DATE_FORMAT(event_date, '%Y-%m-%d') as date
-    FROM photos
-    ORDER BY event_date DESC
-  `;
+    // Then get existing photo event dates
+    const photoDb = createPhotoDbConnection();
+    const [existingDates] = await photoDb.promise().query(
+      `SELECT DISTINCT DATE_FORMAT(event_date, '%Y-%m-%d') as date
+       FROM photos
+       ORDER BY event_date DESC`
+    );
+    photoDb.end();
 
-  photoDb.query(query, (err, results) => {
-    if (err) {
-      console.error('Database query error:', err);
-      photoDb.end();
-      return res.status(500).json({ error: 'Database query error' });
+    // Combine both sets of dates (next event first, then existing dates)
+    let dates = [];
+
+    // Add the next event date if it exists
+    if (nextEvents.length > 0) {
+      dates.push(nextEvents[0].date);
     }
 
-    // Extract dates from the query results
-    const dates = results.map(row => row.date);
+    // Add existing photo dates that aren't already included
+    existingDates.forEach(row => {
+      if (!dates.includes(row.date)) {
+        dates.push(row.date);
+      }
+    });
 
     // Always include today's date if no dates are found
     if (dates.length === 0) {
       dates.push(new Date().toISOString().split('T')[0]);
     }
 
-    photoDb.end();
-    
     // Add debugging headers to see in browser console
     res.header('X-Debug', 'dates-endpoint-response');
     res.json({ dates });
-  });
+  } catch (error) {
+    console.error('Error fetching event dates:', error);
+    res.status(500).json({ error: 'Server error', details: error.message });
+  }
 });
 
 // Modify the authentication for photo uploads
@@ -1498,15 +1810,6 @@ app.post('/api/admin/add-photographer', authenticateUser, async (req, res) => {
   }
 });
 
-// Authentication middleware for admin routes
-const authenticateAdmin = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) {
-    return res.status(401).json({ error: 'Unauthorized: Missing or invalid token' });
-  }
-  
-  next();
-};
 
 // Get photographers from Suitwalk database
 app.get('/api/admin/photographers/suitwalk', authenticateAdmin, (req, res) => {
@@ -1929,7 +2232,7 @@ app.post('/api/admin/photographers/gallery', authenticateAdmin, async (req, res)
     const photoDb = createPhotoDbConnection();
     
     const [result] = await photoDb.promise().execute(
-      'INSERT INTO photographers (name, telegram_id, website, bio) VALUES (?, ?, ?, ?)',
+      'INSERT INTO photographers (name, telegram_id, website, bio) VALUES (?, ?, NULL, NULL)',
       [name, telegram_id || null, website || null, bio || null]
     );
     
