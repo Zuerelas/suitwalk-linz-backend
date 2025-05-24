@@ -24,7 +24,9 @@ function createSuitwalksDbConnection() {
       password: process.env.DB_PASSWORD,
       database: process.env.DB_NAME, // "suitwalks" database
       ssl: process.env.DB_SSL === 'true' ? true : undefined,
-      connectTimeout: 10000 // 10 second timeout
+      connectTimeout: 10000, // 10 second timeout
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 10000 // 10 second initial delay for keep-alive
     });
     
     // Add connection error handler
@@ -50,9 +52,11 @@ function createPhotoDbConnection() {
       password: process.env.DB_PASSWORD,
       database: 'Photos',
       ssl: process.env.DB_SSL === 'true' ? true : undefined,
-      connectTimeout: 10000 // 10 second timeout
+      connectTimeout: 10000, // 10 second timeout
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 10000 // 10 second initial delay for keep-alive
     });
-    
+
     // Add connection error handler
     connection.on('error', (err) => {
       console.error('Photo database connection error:', err);
@@ -2074,16 +2078,7 @@ app.get('/api/test-endpoint', (req, res) => {
   });
 });
 
-// Handle 404s
-app.use((req, res) => {
-  res.status(404).json({ error: 'Not found' });
-});
 
-// Error handler
-app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
-  res.status(500).json({ error: 'Server error' });
-});
 
 // ===== ADMIN AUTHENTICATION MIDDLEWARE =====
 const verifyAdminToken = (req, res, next) => {
@@ -2112,66 +2107,97 @@ const verifyAdminToken = (req, res, next) => {
 
 // ===== ADMIN API ENDPOINTS =====
 
-// Dashboard statistics endpoint - replace verifyAdminToken with authenticateAdmin
+// Admin dashboard statistics endpoint
 app.get('/api/admin/dashboard', authenticateAdmin, async (req, res) => {
-  console.log('Admin dashboard request received');
   try {
-    // Connect to Photo database
     const photoDb = createPhotoDbConnection();
-    
+
     // Get total photos count
-    const [photoResults] = await photoDb.promise().query(
-      'SELECT COUNT(*) as totalPhotos FROM photos'
+    const [photosResult] = await photoDb.promise().query(
+      'SELECT COUNT(*) as total FROM photos'
     );
-    
+    const totalPhotos = photosResult[0].total;
+
     // Get total photographers count
-    const [photographerResults] = await photoDb.promise().query(
-      'SELECT COUNT(*) as totalPhotographers FROM photographers'
+    const [photographersResult] = await photoDb.promise().query(
+      'SELECT COUNT(*) as total FROM photographers'
     );
-    
+    const totalPhotographers = photographersResult[0].total;
+
     // Get total downloads count
-    const [downloadResults] = await photoDb.promise().query(
-      'SELECT SUM(download_count) as totalDownloads FROM photos'
+    const [downloadsResult] = await photoDb.promise().query(
+      'SELECT SUM(download_count) as total FROM photos'
     );
-    
+    const totalDownloads = downloadsResult[0].total || 0;
+
     // Get recent uploads (last 10)
     const [recentUploads] = await photoDb.promise().query(
       `SELECT 
-        p.id, p.filename, p.title, p.upload_date, p.event_date, p.photographer_id,
-        ph.name as photographer_name
-       FROM photos p
-       JOIN photographers ph ON p.photographer_id = ph.id
-       ORDER BY p.upload_date DESC
-       LIMIT 10`
+        p.id, p.filename, p.title, p.upload_date, p.event_date,
+        ph.id as photographer_id, ph.name as photographer_name
+      FROM photos p
+      JOIN photographers ph ON p.photographer_id = ph.id
+      ORDER BY p.upload_date DESC
+      LIMIT 10`
     );
-    
-    // Get photos per event statistics
-    const [photosByEvent] = await photoDb.promise().query(
+
+    // Get registration statistics from the main database
+    const db = createSuitwalksDbConnection();
+
+    // Get total registrations by type
+    const [registrationsResult] = await db.promise().query(
       `SELECT 
-        DATE_FORMAT(event_date, '%Y-%m-%d') as event_date,
-        COUNT(*) as photoCount
-       FROM photos
-       GROUP BY DATE_FORMAT(event_date, '%Y-%m-%d')
-       ORDER BY event_date DESC
-       LIMIT 5`
+        type, 
+        COUNT(*) as count 
+      FROM users 
+      GROUP BY type 
+      ORDER BY count DESC`
     );
-    
-    // Format results before sending
-    const formattedRecentUploads = recentUploads.map(upload => ({
-      ...upload,
-      upload_date: upload.upload_date.toISOString(),
-      event_date: upload.event_date.toISOString().split('T')[0]
-    }));
-    
+
+    // Get upcoming event details
+    const [nextEventResult] = await db.promise().query(
+      `SELECT 
+        id, event_date, sign_in_start, sign_in_end, title,
+        (NOW() BETWEEN sign_in_start AND sign_in_end) as registration_open
+      FROM suitwalk_events
+      WHERE is_next = true
+      LIMIT 1`
+    );
+
+    const nextEvent = nextEventResult.length > 0 ? nextEventResult[0] : null;
+
+    // Get total registrations for upcoming event
+    let registrationsForNextEvent = 0;
+    if (nextEvent) {
+      const [registrationsCountResult] = await db.promise().query(
+        `SELECT COUNT(*) as count 
+         FROM users 
+         WHERE created_at > ?`,
+        [nextEvent.sign_in_start]
+      );
+      registrationsForNextEvent = registrationsCountResult[0].count;
+    }
+
+    // Close database connections
     photoDb.end();
-    
+    db.end();
+
+    // Return the dashboard data
     res.json({
-      totalPhotos: photoResults[0].totalPhotos,
-      totalPhotographers: photographerResults[0].totalPhotographers,
-      totalDownloads: downloadResults[0].totalDownloads || 0,
-      recentUploads: formattedRecentUploads,
-      photosByEvent: photosByEvent
+      totalPhotos,
+      totalPhotographers,
+      totalDownloads,
+      recentUploads,
+      registrations: {
+        byType: registrationsResult,
+        total: registrationsResult.reduce((sum, type) => sum + type.count, 0)
+      },
+      nextEvent: nextEvent ? {
+        ...nextEvent,
+        registrations: registrationsForNextEvent
+      } : null
     });
+
   } catch (error) {
     console.error('Error fetching dashboard data:', error);
     res.status(500).json({ error: 'Server error', details: error.message });
@@ -2342,4 +2368,15 @@ app.get('/api/admin/photos', authenticateAdmin, async (req, res) => {
     console.error('Error fetching photos:', error);
     res.status(500).json({ error: 'Failed to fetch photos', details: error.message });
   }
+});
+
+// Handle 404s
+app.use((req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
+
+// Error handler
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Server error' });
 });
