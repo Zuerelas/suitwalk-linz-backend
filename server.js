@@ -93,7 +93,7 @@ async function uploadToFTP(localFilePath, eventDate, photographerId, photographe
 
     // MODIFIED: Ensure we use test.suitwalk-linz.at instead of httpdocs
     // Force the webRoot to be /test.suitwalk-linz.at regardless of environment variable
-    const webRoot = '/test.suitwalk-linz.at';
+    const webRoot = '/httpdocs';
     
     // Create the directory structure matching what the frontend expects
     // Format: /gallery/{eventDate}/{photographerId}/full/ and /gallery/{eventDate}/{photographerId}/thumbnails/
@@ -401,31 +401,31 @@ app.get('/api/telegram-auth', async (req, res) => {  // Add async here
     // Redirect to the photo upload page with data in URL fragment
     // Using fragment instead of query to avoid exposing auth data in server logs
     const userDataParam = encodeURIComponent(JSON.stringify(telegramData));
-    return res.redirect(`https://test.suitwalk-linz.at/#/galerie/upload?telegramAuth=${userDataParam}`);
+    return res.redirect(`https://suitwalk-linz.at/#/galerie/upload?telegramAuth=${userDataParam}`);
   }
 
   if (!telegramData || !telegramData.id) {
     console.error('No Telegram data received');
-    return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=no_data');
+    return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=no_data');
   }
 
   try {
     if (!verifyTelegramAuth(telegramData)) {
       console.error('Invalid Telegram authentication');
-      return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=invalid_auth');
+      return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=invalid_auth');
     }
 
     const authDate = parseInt(telegramData.auth_date, 10);
     const currentTime = Math.floor(Date.now() / 1000);
     if (currentTime - authDate > 86400) {
       console.error('Authentication expired');
-      return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=auth_expired');
+      return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=auth_expired');
     }
 
     // Check if database is available
     if (!db) {
       console.error('Database connection is not available');
-      return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
+      return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=database_error');
     }
 
     // Check if registration is open for non-photo-upload and non-unregistration requests
@@ -433,7 +433,7 @@ app.get('/api/telegram-auth', async (req, res) => {  // Add async here
       const registrationOpen = await isRegistrationOpen();
       if (!registrationOpen) {
         console.error('Registration is closed');
-        return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=registration_closed');
+        return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=registration_closed');
       }
     }
 
@@ -441,7 +441,7 @@ app.get('/api/telegram-auth', async (req, res) => {  // Add async here
     db.getConnection((connErr, connection) => {
       if (connErr) {
         console.error('Failed to get database connection:', connErr);
-        return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
+        return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=database_error');
       }
 
       connection.release(); // Release the connection immediately
@@ -453,13 +453,13 @@ app.get('/api/telegram-auth', async (req, res) => {  // Add async here
         db.query(checkUserQuery, [telegramData.id], (checkErr, results) => {
           if (checkErr) {
             console.error('Database check error:', checkErr);
-            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
+            return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=database_error');
           }
 
           // If user doesn't exist, redirect to error
           if (results.length === 0) {
             console.error('Tried to order badge but user not registered');
-            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=not_registered');
+            return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=not_registered');
           }
 
           // User exists, update only badge status
@@ -487,11 +487,11 @@ app.get('/api/telegram-auth', async (req, res) => {  // Add async here
             (updateErr) => {
               if (updateErr) {
                 console.error('Database update error:', updateErr);
-                return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
+                return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=database_error');
               }
 
               console.log('Badge ordered successfully');
-              return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/badge-success');
+              return res.redirect('https://suitwalk-linz.at/#/anmeldung/badge-erfolgreich');
             }
           );
         });
@@ -502,16 +502,16 @@ app.get('/api/telegram-auth', async (req, res) => {  // Add async here
         db.query(deleteQuery, [telegramData.id], (deleteErr, result) => {
           if (deleteErr) {
             console.error('Database delete error:', deleteErr);
-            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
+            return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=database_error');
           }
 
           if (result.affectedRows === 0) {
             console.log('No user found to delete');
-            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=not_registered');
+            return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=not_registered');
           }
 
           console.log('User successfully deleted');
-          return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/abgemeldet');
+          return res.redirect('https://suitwalk-linz.at/#/anmeldung/abgemeldet');
         });
       } else {
         // Normal registration, insert or update user
@@ -542,18 +542,18 @@ app.get('/api/telegram-auth', async (req, res) => {  // Add async here
           (err) => {
             if (err) {
               console.error('Database error:', err);
-              return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
+              return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=database_error');
             }
 
             console.log('User registered successfully');
-            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/success');
+            return res.redirect('https://suitwalk-linz.at/#/anmeldung/erfolgreich');
           }
         );
       }
     });
   } catch (error) {
     console.error('General error:', error);
-    return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=server_error');
+    return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=server_error');
   }
 });
 // Authentication middleware for admin routes
@@ -573,33 +573,33 @@ app.get('/api/telegram-delete', async (req, res) => {
     
     if (!telegramData || !telegramData.id) {
         console.error('No Telegram data received');
-        return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=no_data');
+        return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=no_data');
     }
     
     try {
         if (!verifyTelegramAuth(telegramData)) {
             console.error('Invalid Telegram authentication');
-            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=invalid_auth');
+            return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=invalid_auth');
         }
 
         const authDate = parseInt(telegramData.auth_date, 10);
         const currentTime = Math.floor(Date.now() / 1000);
         if (currentTime - authDate > 86400) {
             console.error('Authentication expired');
-            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=auth_expired');
+            return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=auth_expired');
         }
 
         // Check if database is available
         if (!db) {
             console.error('Database connection is not available');
-            return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
+            return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=database_error');
         }
 
         // Test database connection before proceeding
         db.getConnection((connErr, connection) => {
             if (connErr) {
                 console.error('Failed to get database connection:', connErr);
-                return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
+                return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=database_error');
             }
             
             connection.release(); // Release the connection immediately
@@ -610,21 +610,21 @@ app.get('/api/telegram-delete', async (req, res) => {
             db.query(deleteQuery, [telegramData.id], (deleteErr, result) => {
                 if (deleteErr) {
                     console.error('Database delete error:', deleteErr);
-                    return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=database_error');
+                    return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=database_error');
                 }
                 
                 if (result.affectedRows === 0) {
                     console.log('No user found to delete');
-                    return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=not_registered');
+                    return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=not_registered');
                 }
-                
+
                 console.log('User successfully deleted');
-                return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/abgemeldet');
+                return res.redirect('https://suitwalk-linz.at/#/anmeldung/abgemeldet');
             });
         });
     } catch (error) {
         console.error('General error:', error);
-        return res.redirect('https://test.suitwalk-linz.at/#/anmeldung/error?msg=server_error');
+        return res.redirect('https://suitwalk-linz.at/#/anmeldung/error?msg=server_error');
     }
 });
 
@@ -1524,9 +1524,9 @@ app.get('/api/gallery/download/:id', async (req, res) => {
     
     const photo = rows[0];
     const eventDate = photo.event_date.toISOString().split('T')[0];
-    
-    // MODIFIED: Force the webRoot to be /test.suitwalk-linz.at
-    const webRoot = '/test.suitwalk-linz.at';
+
+    // MODIFIED: Force the webRoot to be /httpdocs
+    const webRoot = '/httpdocs';
     
     // Build filepath matching the structure the frontend expects
     const filePath = path.join(
@@ -1649,16 +1649,15 @@ app.get('/api/gallery/dates-events', async (req, res) => {
        WHERE is_next = true
        LIMIT 1`
     );
-    suitwalksDb.end();
-
+    
     // Then get existing photo event dates
-    const photoDb = createPhotoDbConnection();
-    const [existingDates] = await photoDb.promise().query(
+    const [existingDates] = await suitwalksDb.promise().query(
       `SELECT DISTINCT DATE_FORMAT(event_date, '%Y-%m-%d') as date
-       FROM photos
-       ORDER BY event_date DESC`
+      FROM suitwalk_events
+      WHERE event_date IS NOT NULL
+      ORDER BY event_date DESC`
     );
-    photoDb.end();
+    suitwalksDb.end();
 
     // Combine both sets of dates (next event first, then existing dates)
     let dates = [];
