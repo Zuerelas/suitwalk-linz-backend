@@ -175,19 +175,18 @@ app.use((req, res, next) => {
 // CORS Configuration
 const corsOptions = {
   origin: function (origin, callback) {
-    // For local development, allow requests with no origin (like curl or Postman)
+    // Allow requests with no origin (like curl or Postman) for local development
     if (!origin) {
       return callback(null, true);
     }
 
     const allowedOrigins = [
-      'https://test.suitwalk-linz.at', 
       'https://suitwalk-linz.at',
-      /^http:\/\/localhost(:\d+)?$/  // Allow all localhost origins with any port
+      'https://www.suitwalk-linz.at',
+      /^http:\/\/localhost(:\d+)?$/ // Allow localhost with any port
     ];
-    
-    // Check if origin matches any of the allowed origins
-    // For regex patterns, we need to test them individually
+
+    // Check if the origin matches any of the allowed origins
     let isAllowed = false;
     for (const allowedOrigin of allowedOrigins) {
       if (typeof allowedOrigin === 'string' && allowedOrigin === origin) {
@@ -203,9 +202,7 @@ const corsOptions = {
       callback(null, true);
     } else {
       console.log(`CORS blocked origin: ${origin}`);
-      // TEMPORARILY allow all origins to debug the issue
-      callback(null, true); // Allow all origins during development
-      // callback(new Error('Not allowed by CORS')); // Uncomment this in production
+      callback(new Error('Not allowed by CORS'));
     }
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -1363,6 +1360,19 @@ app.get('/api/next-suitwalk', async (req, res) => {
 });
 // Add this endpoint to check current registration status
 app.get('/api/registration-status', async (req, res) => {
+  console.log('Received request for registration status');
+
+  // Explicitly set CORS headers
+  const allowedOrigins = ['https://suitwalk-linz.at', 'https://www.suitwalk-linz.at'];
+  const origin = req.headers.origin;
+
+  if (allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+  }
+
+  res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+
   try {
     const db = createSuitwalksDbConnection();
 
@@ -1499,12 +1509,11 @@ app.post('/api/gallery/photographers', authenticateUser, (req, res) => {
     photoDb.end();
   });
 });
-
-// GET download photo with tracking
+// Modified download endpoint using FTP
 app.get('/api/gallery/download/:id', async (req, res) => {
   const photoId = req.params.id;
   const photoDb = createPhotoDbConnection();
-  
+
   try {
     // Get photo info with photographer name
     const [rows] = await photoDb.promise().query(
@@ -1516,49 +1525,73 @@ app.get('/api/gallery/download/:id', async (req, res) => {
        WHERE p.id = ?`,
       [photoId]
     );
-    
+
     if (rows.length === 0) {
       photoDb.end();
       return res.status(404).json({ error: 'Photo not found' });
     }
-    
+
     const photo = rows[0];
     const eventDate = photo.event_date.toISOString().split('T')[0];
 
-    // MODIFIED: Force the webRoot to be /httpdocs
-    const webRoot = '/httpdocs';
-    
-    // Build filepath matching the structure the frontend expects
-    const filePath = path.join(
-      webRoot,
-      'gallery',
-      eventDate,
-      photo.photographer_id.toString(),
-      'full',
-      photo.filename
-    );
-    
-    if (!fs.existsSync(filePath)) {
-      photoDb.end();
-      return res.status(404).json({ error: 'Photo file not found ', filePath });
-    }
-    
     // Increment download counter
     await photoDb.promise().execute(
       'UPDATE photos SET download_count = download_count + 1 WHERE id = ?',
       [photoId]
     );
-    
+
     photoDb.end();
-    
-    // Set headers
-    res.setHeader('Content-Disposition', `attachment; filename="${photo.filename}"`);
-    res.setHeader('Content-Type', 'image/jpeg');
-    
-    // Stream the file
-    const fileStream = fs.createReadStream(filePath);
-    fileStream.pipe(res);
-    
+
+    // Use FTP to get the file instead of direct file access
+    const client = new ftp.Client();
+    client.ftp.verbose = false; // Set to true for debugging
+
+    try {
+      await client.access({
+        host: process.env.FTP_HOST,
+        user: process.env.FTP_USER,
+        password: process.env.FTP_PASSWORD,
+        secure: true,
+        secureOptions: {
+          rejectUnauthorized: false // Ignore certificate validation
+        }
+      });
+
+      // Create the remote path
+      const remotePath = `/httpdocs/gallery/${eventDate}/${photo.photographer_id.toString()}/full/${photo.filename}`;
+      console.log(`Fetching file from FTP: ${remotePath}`);
+
+      // Create a temporary file
+      const tempDir = '/tmp';
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+      const tempFilePath = `${tempDir}/${photo.filename}`;
+
+      // Download the file from FTP
+      await client.downloadTo(tempFilePath, remotePath);
+
+      // Set headers for download
+      res.setHeader('Content-Disposition', `attachment; filename="${photo.filename}"`);
+      res.setHeader('Content-Type', 'image/jpeg');
+
+      // Stream the file and clean up after
+      const fileStream = fs.createReadStream(tempFilePath);
+      fileStream.pipe(res);
+
+      // Clean up temp file after streaming is complete
+      fileStream.on('end', () => {
+        fs.unlinkSync(tempFilePath);
+        console.log(`Deleted temporary file: ${tempFilePath}`);
+      });
+
+    } catch (ftpError) {
+      console.error('FTP error:', ftpError);
+      res.status(500).json({ error: 'Error downloading file from FTP', details: ftpError.message });
+    } finally {
+      client.close();
+    }
+
   } catch (error) {
     console.error('Download error:', error);
     photoDb.end();
