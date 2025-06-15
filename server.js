@@ -662,11 +662,6 @@ app.post('/api/order-badge', (req, res) => {
 
 // Add a secure endpoint to get registration data
 app.get('/api/registrations', (req, res) => {
-    // Basic API key authentication
-    const apiKey = req.headers['x-api-key'];
-    if (!apiKey || apiKey !== process.env.ADMIN_API_KEY) {
-        return res.status(401).json({ error: 'Unauthorized' });
-    }
 
     if (!db) {
         return res.status(500).json({ error: 'Database connection not available' });
