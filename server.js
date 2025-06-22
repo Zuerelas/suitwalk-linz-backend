@@ -183,7 +183,8 @@ const corsOptions = {
     const allowedOrigins = [
       'https://suitwalk-linz.at',
       'https://www.suitwalk-linz.at',
-      /^http:\/\/localhost(:\d+)?$/ // Allow localhost with any port
+      /^http:\/\/localhost(:\d+)?$/, // Allow localhost with any port
+      'https://manager.suitwalk-linz.at',
     ];
 
     // Check if the origin matches any of the allowed origins
@@ -2394,6 +2395,202 @@ app.get('/api/admin/photos', authenticateAdmin, async (req, res) => {
   } catch (error) {
     console.error('Error fetching photos:', error);
     res.status(500).json({ error: 'Failed to fetch photos', details: error.message });
+  }
+});
+
+// Neuer Endpunkt, der alle Daten aus allen Datenbanken abruft
+app.get('/api/admin/all-data', authenticateAdmin, async (req, res) => {
+  console.log('Fetching all data from all databases...');
+
+  try {
+    // Verbindungen zu beiden Datenbanken herstellen
+    const suitwalksDb = createSuitwalksDbConnection();
+    const photoDb = createPhotoDbConnection();
+
+    // Daten aus der Suitwalks-Datenbank abrufen
+    const [users] = await suitwalksDb.promise().query(
+      `SELECT 
+        id, telegram_id, first_name, last_name, username, 
+        photo_url, auth_date, type, badge, created_at 
+       FROM users 
+       ORDER BY created_at DESC`
+    );
+
+    const [events] = await suitwalksDb.promise().query(
+      `SELECT 
+        id, event_date, sign_in_start, sign_in_end, title, 
+        description, is_next, created_at
+       FROM suitwalk_events
+       ORDER BY event_date DESC`
+    );
+
+    // Daten aus der Photos-Datenbank abrufen
+    const [photos] = await photoDb.promise().query(
+      `SELECT 
+        p.id, p.filename, p.title, p.description, p.event_date, 
+        p.upload_date, p.download_count, p.file_size, p.width, 
+        p.height, p.tags, p.photographer_id
+       FROM photos p
+       ORDER BY p.upload_date DESC
+       LIMIT 1000`
+    );
+
+    const [photographers] = await photoDb.promise().query(
+      `SELECT 
+        id, name, telegram_id, website, bio
+       FROM photographers
+       ORDER BY name ASC`
+    );
+
+    // Datumswerte für JSON formatieren
+    const formattedEvents = events.map(event => ({
+      ...event,
+      event_date: event.event_date.toISOString().split('T')[0],
+      sign_in_start: event.sign_in_start.toISOString(),
+      sign_in_end: event.sign_in_end.toISOString(),
+      created_at: event.created_at.toISOString()
+    }));
+
+    const formattedUsers = users.map(user => ({
+      ...user,
+      auth_date: user.auth_date ? user.auth_date.toISOString() : null,
+      created_at: user.created_at.toISOString()
+    }));
+
+    const formattedPhotos = photos.map(photo => ({
+      ...photo,
+      event_date: photo.event_date.toISOString().split('T')[0],
+      upload_date: photo.upload_date.toISOString()
+    }));
+
+    // Verbindungen schließen
+    suitwalksDb.end();
+    photoDb.end();
+
+    // Statistiken berechnen
+    const stats = {
+      totalUsers: users.length,
+      totalEvents: events.length,
+      totalPhotos: photos.length,
+      totalPhotographers: photographers.length,
+      usersByType: {},
+      totalDownloads: photos.reduce((sum, photo) => sum + photo.download_count, 0),
+      badgeCount: users.filter(user => user.badge).length
+    };
+
+    // Anzahl der Benutzer nach Typ zählen
+    users.forEach(user => {
+      if (!stats.usersByType[user.type]) {
+        stats.usersByType[user.type] = 0;
+      }
+      stats.usersByType[user.type]++;
+    });
+
+    // Vollständige Daten zurückgeben
+    res.json({
+      stats,
+      data: {
+        users: formattedUsers,
+        events: formattedEvents,
+        photos: formattedPhotos,
+        photographers: photographers
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching all data:', error);
+    res.status(500).json({
+      error: 'Failed to fetch all data',
+      details: error.message
+    });
+  }
+});
+
+// Endpunkt zum manuellen Hinzufügen eines neuen Benutzers
+app.post('/api/admin/users', authenticateAdmin, async (req, res) => {
+  try {
+    const { first_name, last_name, username, telegram_id, type, badge } = req.body;
+
+    // Validiere die Eingabedaten
+    if (!first_name || !telegram_id || !type) {
+      return res.status(400).json({ error: 'Vorname, Telegram ID und Typ sind erforderlich' });
+    }
+
+    const db = createSuitwalksDbConnection();
+
+    // Prüfe, ob der Benutzer bereits existiert
+    const [existingUsers] = await db.promise().query(
+      'SELECT * FROM users WHERE telegram_id = ?',
+      [telegram_id]
+    );
+
+    if (existingUsers.length > 0) {
+      db.end();
+      return res.status(409).json({ error: 'Ein Benutzer mit dieser Telegram ID existiert bereits' });
+    }
+
+    // Neuen Benutzer einfügen
+    const currentDate = new Date().toISOString().slice(0, 19).replace('T', ' ');
+
+    const [result] = await db.promise().execute(
+      `INSERT INTO users 
+        (telegram_id, first_name, last_name, username, type, badge, created_at) 
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        telegram_id,
+        first_name,
+        last_name || '',
+        username || '',
+        type,
+        badge ? 1 : 0,
+        currentDate
+      ]
+    );
+
+    db.end();
+
+    res.status(201).json({
+      success: true,
+      message: 'Benutzer erfolgreich hinzugefügt',
+      userId: result.insertId
+    });
+
+  } catch (error) {
+    console.error('Fehler beim Hinzufügen eines Benutzers:', error);
+    res.status(500).json({ error: 'Serverfehler beim Hinzufügen eines Benutzers' });
+  }
+});
+// Endpunkt zum Löschen eines Benutzers
+app.delete('/api/admin/users/:telegram_id', authenticateAdmin, async (req, res) => {
+  try {
+    const { telegram_id } = req.params;
+
+    if (!telegram_id) {
+      return res.status(400).json({ error: 'Telegram ID ist erforderlich' });
+    }
+
+    const db = createSuitwalksDbConnection();
+
+    // Benutzer löschen
+    const [result] = await db.promise().execute(
+      'DELETE FROM users WHERE telegram_id = ?',
+      [telegram_id]
+    );
+
+    db.end();
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Benutzer nicht gefunden' });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Benutzer erfolgreich gelöscht'
+    });
+
+  } catch (error) {
+    console.error('Fehler beim Löschen eines Benutzers:', error);
+    res.status(500).json({ error: 'Serverfehler beim Löschen eines Benutzers' });
   }
 });
 
